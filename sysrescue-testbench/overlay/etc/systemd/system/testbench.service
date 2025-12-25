@@ -1,0 +1,20 @@
+[Unit]
+Description=SystemRescue TestBench Auto-Run
+After=multi-user.target local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/opt/testbench/run.sh
+
+StandardInput=tty-force
+StandardOutput=journal+console
+StandardError=journal+console
+
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+
+[Install]
+WantedBy=multi-user.target

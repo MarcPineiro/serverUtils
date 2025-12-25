@@ -1,0 +1,7 @@
+sysrescue-testbench.srm
+systemrescue-12.03-testbench-amd64.iso.sha256
+systemrescue-persist.dat
+systemrescue-12.03-amd64.iso
+
+*.iso
+*.srm
