@@ -1,0 +1,10 @@
+bash
+curl
+wget
+jq
+git
+openssh-client
+util-linux
+e2fsprogs
+parted
+lsblk

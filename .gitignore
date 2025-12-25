@@ -5,3 +5,11 @@ systemrescue-12.03-amd64.iso
 
 *.iso
 *.srm
+*.apk
+*.tar.gz
+
+.boot_repository
+
+autoinstall-usb/work
+
+.vagrant/

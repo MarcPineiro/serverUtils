@@ -1,0 +1,21 @@
+#!/sbin/openrc-run
+
+description="Auto provisioning bootstrap (runs before login)"
+
+command="/opt/autorun/autoprov-run.sh"
+command_background="yes"
+pidfile="/run/autoprov.pid"
+
+depend() {
+  need autoprov-mount
+  after bootmisc
+}
+
+start() {
+  ebegin "Starting autoprov"
+  start-stop-daemon --start --make-pidfile --pidfile "$pidfile" \
+    --background \
+    --stdout /run/autoprov.log --stderr /run/autoprov.log \
+    --exec "$command"
+  eend $?
+}
