@@ -1,8 +1,0 @@
-bash
-curl
-wget
-jq
-git
-util-linux
-e2fsprogs
-parted

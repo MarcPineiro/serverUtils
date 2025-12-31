@@ -1,73 +1,87 @@
 #!/bin/sh
+# /opt/autorun/autoprov-run.sh
 set -eu
 
-MARK="/run/autoprov.executed"
-LOG="/run/autoprov-run.log"
+TCE_DIR="/etc/sysconfig/tcedir"
+STATE="$TCE_DIR/state"
 
+mkdir -p "$STATE"
+echo "$(date -Iseconds) START" > "$STATE/autorun.started"
+
+ENV_OVERLAY="/opt/autorun/autoprov.env"
+ENV_TCE="$TCE_DIR/autoprov.env"
+
+[ -f "$ENV_OVERLAY" ] && . "$ENV_OVERLAY"
+[ -f "$ENV_TCE" ] && . "$ENV_TCE"
+
+: "${GITHUB_BOOTSTRAP_URL:?Missing GITHUB_BOOTSTRAP_URL in $ENV_FILE}"
+: "${NET_WAIT_SECONDS:=25}"
+: "${RUN_ONCE:=1}"
+: "${RUN_ONCE_FLAG_REL:=autoprov/ran.ok}"
+: "${FALLBACK_SCRIPT:=/opt/autorun/bootstrap.fallback.sh}"
+: "${BOOTSTRAP_ARGS:=}"
+
+LOG_DIR="/etc/sysconfig/tcedir/logs"
+mkdir -p "$LOG_DIR" >/dev/null 2>&1 || true
+LOG="$LOG_DIR/autoprov.log"
 exec >>"$LOG" 2>&1
+set -x
 
-echo "[autoprov] start $(date)"
+FLAG_PATH="/etc/sysconfig/tcedir/${RUN_ONCE_FLAG_REL}"
 
-# Only once per boot
-[ -f "$MARK" ] && exit 0
-date > "$MARK"
-
-# Load env prepared by mount-env
-if [ -f /run/autoprov.env ]; then
-  set -a
-  . /run/autoprov.env
-  set +a
+if [ "$RUN_ONCE" = "1" ] && [ -f "$FLAG_PATH" ]; then
+  echo "[autoprov] RUN_ONCE enabled and flag exists: $FLAG_PATH -> skipping"
+  exit 0
 fi
 
-: "${GITHUB_BOOTSTRAP_URL:=}"
-: "${BOOTSTRAP_TIMEOUT_SEC:=15}"
-: "${BOOTSTRAP_DEST:=/opt/autorun/bootstrap.sh}"
+# Esperar red
+i=0
+while [ "$i" -lt "$NET_WAIT_SECONDS" ]; do
+  ip route | grep -q '^default' && break
+  sleep 1
+  i=$((i+1))
+done
 
-normalize_github_url() {
-  case "$1" in
-    https://github.com/*/*/blob/*)
-      echo "$1" | sed -E 's#^https://github.com/([^/]+)/([^/]+)/blob/([^/]+)/(.*)$#https://raw.githubusercontent.com/\1/\2/\3/\4#'
-      ;;
-    *) echo "$1";;
-  esac
-}
+DL_TOOL=""
+if command -v curl >/dev/null 2>&1; then
+  DL_TOOL="curl"
+elif command -v wget >/dev/null 2>&1; then
+  DL_TOOL="wget"
+fi
 
-fetch_to() {
-  url="$1"; dest="$2"; timeout="$3"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --connect-timeout "$timeout" --max-time "$timeout" "$url" -o "$dest"
-  else
-    wget -q -T "$timeout" -O "$dest" "$url"
-  fi
-}
+TMP_BOOT="/tmp/bootstrap.sh"
+ok="0"
 
-BOOT_OK=0
-if [ -n "$GITHUB_BOOTSTRAP_URL" ]; then
-  RAW_URL="$(normalize_github_url "$GITHUB_BOOTSTRAP_URL")"
-  echo "[autoprov] downloading bootstrap: $RAW_URL"
-  if fetch_to "$RAW_URL" "$BOOTSTRAP_DEST" "$BOOTSTRAP_TIMEOUT_SEC"; then
-    chmod +x "$BOOTSTRAP_DEST" || true
-    BOOT_OK=1
-  else
-    echo "[autoprov] download failed; will fallback"
-  fi
+if [ "$DL_TOOL" = "curl" ]; then
+  if curl -fsSL "$GITHUB_BOOTSTRAP_URL" -o "$TMP_BOOT"; then ok="1"; fi
+elif [ "$DL_TOOL" = "wget" ]; then
+  if wget -qO "$TMP_BOOT" "$GITHUB_BOOTSTRAP_URL"; then ok="1"; fi
 else
-  echo "[autoprov] GITHUB_BOOTSTRAP_URL empty; will fallback"
+  echo "[autoprov] Neither curl nor wget found. Ensure .tcz are in onboot.lst"
 fi
 
-if [ "$BOOT_OK" -ne 1 ]; then
-  if [ -f /opt/autorun/bootstrap.fallback.sh ]; then
-    echo "[autoprov] using embedded fallback bootstrap"
-    cp -f /opt/autorun/bootstrap.fallback.sh "$BOOTSTRAP_DEST"
-    chmod +x "$BOOTSTRAP_DEST" || true
+if [ "$ok" = "1" ]; then
+  chmod +x "$TMP_BOOT"
+  echo "[autoprov] Running downloaded bootstrap: $GITHUB_BOOTSTRAP_URL"
+  sh "$TMP_BOOT" $BOOTSTRAP_ARGS || ok="0"
+else
+  echo "[autoprov] Download failed, will use fallback"
+fi
+
+if [ "$ok" != "1" ]; then
+  if [ -x "$FALLBACK_SCRIPT" ]; then
+    echo "[autoprov] Running fallback: $FALLBACK_SCRIPT"
+    sh "$FALLBACK_SCRIPT" || true
   else
-    echo "[autoprov] ERROR: missing /opt/autorun/bootstrap.fallback.sh"
-    exit 1
+    echo "[autoprov] Fallback script missing/not executable: $FALLBACK_SCRIPT"
   fi
 fi
 
-echo "[autoprov] executing: $BOOTSTRAP_DEST"
-"$BOOTSTRAP_DEST" || true
+if [ "$RUN_ONCE" = "1" ]; then
+  mkdir -p "$(dirname "$FLAG_PATH")" || true
+  date > "$FLAG_PATH" || true
+fi
 
-echo "[autoprov] end $(date)"
-exit 0
+echo "[autoprov] Done"
+
+echo "$(date -Iseconds) END" > "$STATE/autorun.finished"

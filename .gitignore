@@ -7,6 +7,8 @@ systemrescue-12.03-amd64.iso
 *.srm
 *.apk
 *.tar.gz
+*.tcz
+*.tcz.*
 
 .boot_repository
 

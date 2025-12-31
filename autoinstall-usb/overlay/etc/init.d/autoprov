@@ -1,21 +1,29 @@
-#!/sbin/openrc-run
+#!/bin/sh
+# /etc/init.d/autoprov - run provisioning at boot
+# TinyCore init scripts style
 
-description="Auto provisioning bootstrap (runs before login)"
-
-command="/opt/autorun/autoprov-run.sh"
-command_background="yes"
-pidfile="/run/autoprov.pid"
-
-depend() {
-  need autoprov-mount
-  after bootmisc
-}
+TCE_DIR="/etc/sysconfig/tcedir"
+STATE="$TCE_DIR/state"
+LOGDIR="$TCE_DIR/logs"
 
 start() {
-  ebegin "Starting autoprov"
-  start-stop-daemon --start --make-pidfile --pidfile "$pidfile" \
-    --background \
-    --stdout /run/autoprov.log --stderr /run/autoprov.log \
-    --exec "$command"
-  eend $?
+  mkdir -p "$STATE" "$LOGDIR"
+
+  echo "$(date -Iseconds) START" > "$STATE/autorun.started"
+
+  if [ -x /opt/autorun/autoprov-run.sh ]; then
+    /opt/autorun/autoprov-run.sh >>"$LOGDIR/autoprov.log" 2>&1
+    rc=$?
+  else
+    echo "Missing /opt/autorun/autoprov-run.sh" >>"$LOGDIR/autoprov.log"
+    rc=127
+  fi
+
+  echo "$(date -Iseconds) END rc=$rc" > "$STATE/autorun.finished"
+  return $rc
 }
+
+case "$1" in
+  start) start ;;
+  *) exit 0 ;;
+esac
