@@ -1,0 +1,8 @@
+---
+# roles/ipxe_bootloader/handlers/main.yml
+
+- name: restart tftp
+  systemd:
+    name: tftpd-hpa
+    state: restarted
+  ignore_errors: yes

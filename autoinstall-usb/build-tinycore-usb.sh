@@ -105,6 +105,7 @@ ensure_tcz_offline_with_vagrant_if_needed() {
 ISO=""
 DEV=""
 OVERLAY_DIR="./overlay"
+BOOTSTRAP_FILES_DIR="./bootstrap"
 TCZ_DIR=""
 PKG_LIST=""
 LABEL_ESP="TINYBOOT"
@@ -392,7 +393,7 @@ EOF
   # copy autorun env file
   cp -a "$OVERLAY_DIR/opt/autorun/autoprov.env" "$per_mnt/tce" 2>/dev/null || true
   # copy files needed by bootstrap scripts
-  cp -a "$OVERLAY_DIR/opt/autorun/autoprov.env" "$per_mnt/tce" 2>/dev/null || true
+  cp -a "$BOOTSTRAP_FILES_DIR/." "$per_mnt/tce" 2>/dev/null || true
 
   sync
   umount "$per_mnt" || true

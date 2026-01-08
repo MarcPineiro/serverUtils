@@ -1,0 +1,91 @@
+---
+# roles/dnsmasq_pxe/tasks/main.yml
+# Configura dnsmasq para DHCP + TFTP + DNS local
+
+- name: Ensure dnsmasq is installed
+  apt:
+    name: dnsmasq
+    state: present
+
+- name: Configure dnsmasq for PXE
+  template:
+    src: dnsmasq.conf.j2
+    dest: /etc/dnsmasq.d/pxe.conf
+    mode: '0644'
+  notify: restart dnsmasq
+
+- name: Ensure dnsmasq is enabled
+  systemd:
+    name: dnsmasq
+    enabled: yes
+    state: started
+
+- name: Create TFTP directory structure
+  file:
+    path: "{{ tftp_root }}/{{ item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - pxelinux.cfg
+    - images
+
+- name: Configure systemd-resolved to use dnsmasq
+  lineinfile:
+    path: /etc/systemd/resolved.conf
+    regexp: '^#?DNS='
+    line: 'DNS=127.0.0.1'
+    state: present
+  notify: restart systemd-resolved
+
+- name: Set FallbackDNS in resolved.conf
+  lineinfile:
+    path: /etc/systemd/resolved.conf
+    regexp: '^#?FallbackDNS='
+    line: 'FallbackDNS=8.8.8.8 8.8.4.4'
+    state: present
+  notify: restart systemd-resolved
+
+- name: Disable DNSSEC for local network
+  lineinfile:
+    path: /etc/systemd/resolved.conf
+    regexp: '^#?DNSSEC='
+    line: 'DNSSEC=no'
+    state: present
+  notify: restart systemd-resolved
+
+# Healthchecks
+- name: "[HEALTHCHECK] Wait for dnsmasq to be ready"
+  wait_for:
+    port: 53
+    delay: 2
+    timeout: 30
+  ignore_errors: yes
+  register: dnsmasq_port_check
+
+- name: "[HEALTHCHECK] Verify dnsmasq is running"
+  systemd:
+    name: dnsmasq
+  register: dnsmasq_running
+  failed_when: dnsmasq_running.status.ActiveState != 'active'
+  ignore_errors: yes
+
+- name: "[HEALTHCHECK] Test DNS resolution locally"
+  command: nslookup localhost 127.0.0.1
+  changed_when: false
+  register: dns_test
+  failed_when: dns_test.rc != 0
+  ignore_errors: yes
+
+- name: "[HEALTHCHECK] Verify TFTP directory exists and is readable"
+  file:
+    path: "{{ tftp_root }}"
+    state: directory
+    mode: '0755'
+
+- name: "[HEALTHCHECK] Display dnsmasq status"
+  debug:
+    msg:
+      - "dnsmasq DHCP/TFTP/DNS Status:"
+      - "  Port 53 (DNS): {{ 'OK ✓' if dnsmasq_port_check is not skipped and dnsmasq_port_check.rc == 0 else 'FAILED ✗' }}"
+      - "  Service status: {{ dnsmasq_running.status.ActiveState | default('unknown') }}"
+      - "  TFTP root: {{ tftp_root }}"

@@ -1,0 +1,20 @@
+#!ipxe
+# roles/ipxe_bootloader/templates/machine-example-proxmox.ipxe.j2
+# Proxmox Server Installation configuration
+
+echo Installing Proxmox VE...
+echo
+
+# For Proxmox, boot Proxmox installer with automatic options
+set base_url http://{{ ansible_default_ipv4.address | default('192.168.1.1') }}
+
+# Placeholder: Proxmox netinstall kernel/initrd
+# This would boot the Proxmox installer with autoanswer file
+# kernel ${base_url}/boot/proxmox/vmlinuz-amd64 ...
+# initrd ${base_url}/boot/proxmox/initrd.gz
+# boot
+
+# Fallback
+echo Proxmox boot configuration not yet available
+echo Booting from local disk...
+sanboot --no-describe --drive 0x80

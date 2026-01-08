@@ -1,0 +1,3 @@
+#cloud-config
+instance-id: iid-supervisor-01
+local-hostname: supervisor

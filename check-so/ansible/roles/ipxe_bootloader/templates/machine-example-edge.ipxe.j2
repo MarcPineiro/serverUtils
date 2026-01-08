@@ -1,0 +1,21 @@
+#!ipxe
+# roles/ipxe_bootloader/templates/machine-example-edge.ipxe.j2
+# Edge Node (Ubuntu) Installation configuration
+
+echo Installing Edge Node (Ubuntu 24.04)...
+echo
+
+# For Edge nodes, boot Ubuntu 24.04 with cloud-init NoCloud
+set base_url http://{{ ansible_default_ipv4.address | default('192.168.1.1') }}
+set seed_url http://{{ ansible_default_ipv4.address | default('192.168.1.1') }}/cloud-init/
+
+# Boot Ubuntu with cloud-init NoCloud datasource
+# This uses the Ubuntu 24.04 kernel/initrd via autoinstall
+# kernel ${base_url}/boot/ubuntu/vmlinuz-generic root=/dev/nfs rw nfsroot=... ds=nocloud;s=${seed_url}
+# initrd ${base_url}/boot/ubuntu/initrd.img-generic
+# boot
+
+# Fallback: boot from local disk
+echo Edge Node boot configuration not yet fully available
+echo Booting from local disk...
+sanboot --no-describe --drive 0x80

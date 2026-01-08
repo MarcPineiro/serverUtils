@@ -1,0 +1,12 @@
+---
+# roles/dnsmasq_pxe/handlers/main.yml
+
+- name: restart dnsmasq
+  systemd:
+    name: dnsmasq
+    state: restarted
+
+- name: restart systemd-resolved
+  systemd:
+    name: systemd-resolved
+    state: restarted

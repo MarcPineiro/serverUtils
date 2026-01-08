@@ -1,0 +1,16 @@
+#!ipxe
+# roles/ipxe_bootloader/templates/boot.ipxe.j2
+# Main iPXE boot script - serves as entry point
+
+echo ========================================
+echo PXE Boot Menu - Supervisor
+echo ========================================
+echo MAC: ${net0/mac}
+echo IP: ${net0/ip}
+echo ========================================
+
+# Set timeout for menu display (30 seconds)
+set menu-timeout 30000
+
+# Chain to menu
+chain http://{{ ansible_default_ipv4.address | default('192.168.1.1') }}/boot/menu.ipxe

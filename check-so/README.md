@@ -94,12 +94,15 @@ Notas y recomendaciones
 - Para pruebas rápidas en máquinas reales, puedes exportar `TEST_MODE=1` para evitar modificar el disco.
 
 
-Variables de control útiles
-- `CHECK_UUID` : UUID de la partición raíz que quieres que el script verifique/gestione. Si no se proporciona y se detectan varias particiones con sistemas instalados, el script abortará y pedirá que especifiques `CHECK_UUID` para desambiguar.
-- `EXCLUDE_UUID`: UUIDs de particiones que se deben ignorar (útil para excluir la partición del USB supervisor si aparece entre los dispositivos detectados). Se admiten múltiples UUIDs separados por comas.
 
-Ejemplo `.env` con excluidos múltiples:
+Ejemplo `installer.env` colocado en la partición `TINYDATA` bajo `ENV/installer.env`:
 
+```
+EXCLUDE_UUID=2EC5-FD8C,965f1e37-340a-4c1f-852f-ee53a6ab396d
+CHECK_UUID=
+SEED_URL=https://config.tudominio/supervisor/24.04/
+CONFIG_VERSION=1
+```
 ```
 EXCLUDE_UUID=2EC5-FD8C,965f1e37-340a-4c1f-852f-ee53a6ab396d
 CHECK_UUID=

@@ -1,0 +1,175 @@
+---
+# supervisor.yml
+# Playbook EXCLUSIVO para configurar el SUPERVISOR como servidor PXE
+# Ejecutado SOLO en el supervisor (localhost) por cloud-init al primer boot
+# y posteriormente por ansible-pull local.
+# 
+# NOTA: Este playbook NO configura máquinas cliente (NAS, Proxmox, Edge).
+#       Esas máquinas tienen sus propios playbooks.
+
+- name: Configure SUPERVISOR as PXE Server
+  hosts: localhost
+  become: yes
+  gather_facts: yes
+
+  vars:
+    supervisor_role: "pxe_server"  # SOLO PXE server en this playbook
+    pxe_server_ip: "{{ ansible_default_ipv4.address | default('192.168.1.1') }}"
+    pxe_dhcp_range_start: "192.168.1.50"
+    pxe_dhcp_range_end: "192.168.1.200"
+    http_root: "/srv/http"
+    tftp_root: "/srv/http/tftp"
+    boot_dir: "/srv/http/boot"
+    preseed_dir: "/srv/http/preseed"
+    cloud_init_dir: "/srv/http/cloud-init"
+    # Healthcheck timeouts
+    healthcheck_timeout: 30
+    healthcheck_retries: 5
+
+  pre_tasks:
+    - name: "[PRE] Verify this is supervisor environment"
+      assert:
+        that:
+          - ansible_connection == 'local' or inventory_hostname == 'localhost'
+        fail_msg: "Este playbook está diseñado SOLO para ejecutar en localhost (supervisor)"
+        success_msg: "Ejecutando en supervisor (localhost) ✓"
+
+    - name: "[PRE] Update apt cache"
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: "[PRE] Create required directories"
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ http_root }}"
+        - "{{ tftp_root }}"
+        - "{{ boot_dir }}"
+        - "{{ preseed_dir }}"
+        - "{{ cloud_init_dir }}"
+        - /var/lib/autoprov
+
+    - name: "[PRE] Ensure autoprov user exists"
+      user:
+        name: autoprov
+        groups: autoprov,sudo
+        state: present
+        shell: /bin/bash
+
+  roles:
+    - name: dnsmasq_pxe
+    - name: nginx_pxe
+    - name: ipxe_bootloader
+
+  post_tasks:
+    - name: "[POST] Write convergence marker"
+      copy:
+        content: "1"
+        dest: /var/lib/autoprov/config_version
+        mode: '0644'
+      changed_when: false
+
+    - name: "[POST] Enable PXE services on boot"
+      systemd:
+        name: "{{ item }}"
+        enabled: yes
+      loop:
+        - dnsmasq
+        - nginx
+      ignore_errors: yes
+
+    - name: "[POST] Start PXE services"
+      systemd:
+        name: "{{ item }}"
+        state: started
+      loop:
+        - dnsmasq
+        - nginx
+      register: service_start
+      ignore_errors: yes
+
+    - name: "[HEALTHCHECK] Wait for dnsmasq to be ready"
+      wait_for:
+        port: 53
+        delay: 2
+        timeout: "{{ healthcheck_timeout }}"
+      ignore_errors: yes
+      register: dnsmasq_check
+
+    - name: "[HEALTHCHECK] Wait for nginx to be ready"
+      wait_for:
+        port: 80
+        delay: 2
+        timeout: "{{ healthcheck_timeout }}"
+      ignore_errors: yes
+      register: nginx_check
+
+    - name: "[HEALTHCHECK] Test dnsmasq DHCP availability"
+      command: systemctl is-active dnsmasq
+      changed_when: false
+      register: dnsmasq_status
+      failed_when: dnsmasq_status.rc != 0
+
+    - name: "[HEALTHCHECK] Test nginx HTTP availability"
+      uri:
+        url: "http://{{ ansible_default_ipv4.address | default('localhost') }}/index.html"
+        status_code: 200
+      register: nginx_http_check
+      retries: "{{ healthcheck_retries }}"
+      delay: 2
+      until: nginx_http_check.status | default(0) == 200
+      ignore_errors: yes
+
+    - name: "[HEALTHCHECK] Verify cloud-init seed files accessible"
+      uri:
+        url: "http://{{ ansible_default_ipv4.address | default('localhost') }}/cloud-init/user-data"
+        method: HEAD
+      register: seed_check
+      ignore_errors: yes
+
+    - name: "[HEALTHCHECK] Verify boot scripts accessible"
+      uri:
+        url: "http://{{ ansible_default_ipv4.address | default('localhost') }}/boot/menu.ipxe"
+        method: HEAD
+      register: boot_check
+      ignore_errors: yes
+
+    - name: "[HEALTHCHECK] Check systemd-resolved status"
+      command: systemctl is-active systemd-resolved
+      changed_when: false
+      register: resolved_status
+      failed_when: resolved_status.rc != 0
+      ignore_errors: yes
+
+    - name: "[SUMMARY] Display supervisor configuration status"
+      debug:
+        msg:
+          - "╔════════════════════════════════════════════════════════════╗"
+          - "║        SUPERVISOR PXE SERVER - CONFIGURATION SUMMARY       ║"
+          - "╠════════════════════════════════════════════════════════════╣"
+          - "║ Hostname: {{ ansible_hostname }}"
+          - "║ IP Address: {{ ansible_default_ipv4.address | default('N/A') }}"
+          - "║"
+          - "║ Services Status:"
+          - "║   dnsmasq (DHCP/TFTP): {{ dnsmasq_status.stdout | default('unknown') }}"
+          - "║   nginx (HTTP): {{ nginx_status.stdout | default('unknown') if nginx_status is defined else 'started' }}"
+          - "║   systemd-resolved (DNS): {{ resolved_status.stdout | default('unknown') }}"
+          - "║"
+          - "║ Healthchecks:"
+          - "║   dnsmasq port 53: {{ 'OK ✓' if dnsmasq_check is not skipped and dnsmasq_check.rc == 0 else 'FAILED ✗' }}"
+          - "║   nginx port 80: {{ 'OK ✓' if nginx_check is not skipped and nginx_check.rc == 0 else 'FAILED ✗' }}"
+          - "║   cloud-init seeds: {{ 'OK ✓' if seed_check is not skipped and seed_check.status | default(0) == 200 else 'FAILED ✗' }}"
+          - "║   boot scripts: {{ 'OK ✓' if boot_check is not skipped and boot_check.status | default(0) == 200 else 'FAILED ✗' }}"
+          - "║"
+          - "║ Directories:"
+          - "║   HTTP root: {{ http_root }}"
+          - "║   TFTP root: {{ tftp_root }}"
+          - "║   Boot images: {{ boot_dir }}"
+          - "║   Preseed: {{ preseed_dir }}"
+          - "║   Cloud-init: {{ cloud_init_dir }}"
+          - "║"
+          - "║ Configuration Version: {{ lookup('file', '/var/lib/autoprov/config_version') }}"
+          - "╚════════════════════════════════════════════════════════════╝"

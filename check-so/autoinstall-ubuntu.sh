@@ -6,7 +6,7 @@ set -euo pipefail
 # si hace falta instala/repara Ubuntu 24.04 LTS con cloud-init NoCloud
 # Nota: ejecutar como root desde un live-USB supervisor.
 
-SEED_URL="https://config.tudominio/supervisor/24.04/"
+SEED_URL="https://raw.githubusercontent.com/MarcPineiro/serverUtils/refs/heads/main/check-so/cloud-init/"
 CONFIG_VERSION="1"
 RELEASE="24.04"
 ARCH="amd64"
@@ -16,42 +16,30 @@ ARCH="amd64"
 #             If provided and found, script will operate on that partition; otherwise it fails.
 # EXCLUDE_UUID: If set, any partition with this UUID will be ignored (useful to exclude the USB).
 # Other variables (SEED_URL, CONFIG_VERSION, etc.) may be overridden in the .env.
-CANDIDATE_ENV_FILE=""
+# Default TCE_DIR (can be overridden for testing)
+TCE_DIR="${TCE_DIR:-/etc/sysconfig/tcedir}"
 
+# Load installer env from $TCE_DIR/ENV/installer.env or $TCE_DIR/installer.env
 load_persist_env(){
-	# Look for a block device with LABEL=TINYDATA
-	dev=$(blkid -o device -t LABEL="TINYDATA" 2>/dev/null | head -n1 || true)
-	if [ -z "$dev" ]; then
-		log "No se encontró partición con LABEL=TINYDATA; se usarán valores por defecto/env actuales."
-		return 1
-	fi
-	mountpoint="/mnt/persist"
-	mkdir -p "$mountpoint"
-	if ! mount "$dev" "$mountpoint" 2>/dev/null; then
-		log "No se pudo montar $dev en $mountpoint; se usarán valores por defecto/env actuales."
-		return 2
-	fi
-	# Check common locations: /PERSIST/.env or /.env
-	if [ -f "$mountpoint/PERSIST/.env" ]; then
-		CANDIDATE_ENV_FILE="$mountpoint/PERSIST/.env"
-	elif [ -f "$mountpoint/.env" ]; then
-		CANDIDATE_ENV_FILE="$mountpoint/.env"
+	CANDIDATE_ENV_FILE=""
+	if [ -f "$TCE_DIR/ENV/installer.env" ]; then
+		CANDIDATE_ENV_FILE="$TCE_DIR/ENV/installer.env"
+	elif [ -f "$TCE_DIR/installer.env" ]; then
+		CANDIDATE_ENV_FILE="$TCE_DIR/installer.env"
 	fi
 	if [ -n "$CANDIDATE_ENV_FILE" ]; then
 		log "Cargando variables desde $CANDIDATE_ENV_FILE"
-		# export variables from file (assumes simple KEY=VAL lines)
 		set -o allexport
 		# shellcheck disable=SC1090
 		. "$CANDIDATE_ENV_FILE"
 		set +o allexport
-	else
-		log "No se encontró .env en $dev (buscado /PERSIST/.env y /.env)."
+		return 0
 	fi
-	umount "$mountpoint" || true
-	return 0
+	log "No se encontró installer.env en $TCE_DIR; se usarán valores por defecto/env actuales."
+	return 1
 }
 
-# Initialize environment from persist partition if available
+# Initialize environment from TCE_DIR if available
 load_persist_env || true
 
 # Ensure optional env vars have defaults (empty when not provided)
