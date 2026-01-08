@@ -4,3 +4,8 @@ openssl.tcz
 nano.tcz
 iproute2.tcz
 busybox_extras.tcz
+util-linux.tcz
+e2fsprogs.tcz
+parted.tcz
+dosfstools.tcz
+efibootmgr.tcz

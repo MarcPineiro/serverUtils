@@ -389,7 +389,9 @@ EOF
 #     patch_bootconfigs_add_karg "$esp_mnt" "backup=LABEL=${LABEL_PERSIST}"
 #   fi
 
-  # copy env file
+  # copy autorun env file
+  cp -a "$OVERLAY_DIR/opt/autorun/autoprov.env" "$per_mnt/tce" 2>/dev/null || true
+  # copy files needed by bootstrap scripts
   cp -a "$OVERLAY_DIR/opt/autorun/autoprov.env" "$per_mnt/tce" 2>/dev/null || true
 
   sync

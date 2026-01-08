@@ -1,0 +1,320 @@
+---
+
+# Arquitectura completa (versión final consolidada)
+
+## Objetivo
+
+Disponer de un **sistema de provisionamiento y gestión completamente automático**, donde:
+
+* Un **USB supervisor** garantiza que el portátil principal tenga siempre:
+
+  * Ubuntu 24.04 LTS correcto
+  * cloud-init apuntando a GitHub
+  * configuración convergente
+* Ese portátil se convierte en:
+
+  * **Servidor PXE**
+  * **Orquestador Ansible**
+  * **Controlador CI/CD interno**
+* El resto de máquinas (**NAS, Proxmox, Portátil2**) se:
+
+  * instalan automáticamente si están vacías o mal
+  * se identifican por MAC
+  * se configuran y mantienen por Ansible (pull + push)
+
+Todo el sistema es **idempotente**, **reparable** y **versionado**.
+
+---
+
+## FASE 1 — USB Supervisor (arranque inicial)
+
+### Qué hace el USB
+
+El USB **arranca siempre primero** y ejecuta un script descargado desde GitHub.
+
+Ese script:
+
+1. Detecta el HDD interno
+2. Comprueba:
+
+   * ¿Hay Linux instalado?
+   * ¿Es Ubuntu 24.04 LTS?
+   * ¿GRUB tiene el cmdline correcto con NoCloud `s=URL`?
+   * ¿Existe el flag de versión de configuración?
+3. Actúa según el estado:
+
+| Estado detectado    | Acción                               |
+| ------------------- | ------------------------------------ |
+| No hay SO           | Instala Ubuntu 24.04 automáticamente |
+| SO ≠ 24.04          | Reinstala                            |
+| 24.04 pero GRUB mal | Corrige GRUB                         |
+| Todo correcto       | Arranca HDD                          |
+
+4. Fuerza el arranque desde HDD
+
+> El USB **nunca configura** el sistema: solo garantiza que el HDD arrancará en el estado esperado.
+
+---
+
+## FASE 2 — Ubuntu Supervisor (primer boot del HDD)
+
+### Cloud-init (NoCloud seedfrom)
+
+Ubuntu arranca con kernel cmdline similar a:
+
+```
+ds=nocloud;s=https://config.tudominio/supervisor/24.04/
+```
+
+En esa URL existen:
+
+```
+/user-data
+/meta-data
+/vendor-data        (opcional)
+/network-config     (opcional)
+```
+
+Cloud-init solo hace **bootstrap mínimo**:
+
+1. Red funcional
+2. SSH keys
+3. Instala:
+
+   * python
+   * git
+   * ansible
+4. Clona repo de infraestructura
+5. Ejecuta:
+
+   ```bash
+   ansible-pull -U https://github.com/tuorg/infra-config.git supervisor.yml
+   ```
+6. Escribe:
+
+   ```
+   /var/lib/autoprov/config_version
+   ```
+
+⚠️ **Toda la lógica compleja va en Ansible**, no en cloud-init.
+
+---
+
+## FASE 3 — Supervisor como servidor PXE
+
+El supervisor levanta:
+
+* `dnsmasq` → DHCP + TFTP
+* `iPXE` → primer cargador
+* `HTTP (nginx/caddy)` → kernels, initrds, configs
+
+### Flujo PXE real
+
+1. Máquina cliente arranca por red
+2. DHCP entrega `ipxe.efi`
+3. iPXE descarga `boot.ipxe` por HTTP
+4. Se muestra **menú PXE con timeout**
+
+---
+
+## Menú PXE con timeout (cambio clave)
+
+El menú permite:
+
+* **Modo automático (default)** → por MAC
+* **Modo manual** → si se pulsa una tecla
+
+### Lógica del menú
+
+1. iPXE detecta MAC
+2. Busca el rol asociado
+3. Muestra menú durante X segundos
+4. Si no hay interacción:
+
+   * arranca la instalación automática correcta
+5. Si hay interacción:
+
+   * permite elegir manualmente
+
+### Seguridad incluida
+
+Si una MAC **no está registrada**:
+
+* el default es:
+
+  * *Boot from local disk*
+  * o *Mostrar menú sin autoinstall*
+
+Esto evita instalaciones accidentales.
+
+---
+
+## Identificación de máquinas (rol)
+
+La identificación se hace **principalmente por MAC**.
+
+Ejemplo de roles:
+
+| Máquina   | Rol       | SO           |
+| --------- | --------- | ------------ |
+| NAS       | `nas`     | Debian + OMV |
+| Server    | `proxmox` | Proxmox VE   |
+| Portátil2 | `edge`    | Ubuntu 24.04 |
+
+El rol decide:
+
+* qué instalador arrancar
+* qué configuración aplicar
+* qué playbook ejecutar
+
+---
+
+## FASE 4 — Instalación automática por tipo de máquina
+
+### 1️⃣ NAS — Debian + OMV
+
+* Arranque PXE → Debian netinst
+* Kernel params incluyen:
+
+  ```
+  auto=true priority=critical preseed/url=http://supervisor/preseed/nas.cfg
+  ```
+* Preseed:
+
+  * particionado
+  * usuario + SSH
+  * sistema mínimo
+* Post-install:
+
+  * OMV se instala encima
+* Ansible:
+
+  * discos
+  * shares
+  * NFS / iSCSI
+
+---
+
+### 2️⃣ Proxmox Server
+
+* Arranque PXE → instalador Proxmox automatizado
+* Answer file servido por HTTP
+* Instalación desatendida
+* Post-install:
+
+  * Ansible:
+
+    * red
+    * usuarios
+    * storage remoto (NAS)
+* Terraform (opcional):
+
+  * VMs
+  * CTs
+  * redes
+  * cloud-init de VMs
+
+> Terraform **solo gestiona Proxmox**, nunca baremetal.
+
+---
+
+### 3️⃣ Portátil2 — Edge node
+
+* Arranque PXE → Ubuntu autoinstall
+* Cloud-init NoCloud `s=.../portatil2/24.04/`
+* Ansible:
+
+  * VPN
+  * DNS
+  * GitHub runners
+  * servicios edge
+
+Este nodo tiene acceso L3 a toda la red interna.
+
+---
+
+## FASE 5 — Gestión continua (Ansible pull + push)
+
+### Pull (estado real)
+
+Todos los hosts tienen:
+
+* `ansible-pull` por systemd timer
+* convergencia garantizada
+* repositorio común
+
+Ejemplo:
+
+```
+*/15 * * * * ansible-pull
+```
+
+---
+
+### Push (acelerador desde CI)
+
+Los **GitHub Workflows**, ejecutados en el runner del Portátil2:
+
+1. PR → entorno de pruebas (VMs/CTs)
+2. Merge → producción
+3. Si el PR marca `critical-change=true`:
+
+   * despliegue inmediato
+
+Dos opciones válidas:
+
+* Push directo (`ansible-playbook`)
+* Señal de ejecución inmediata del pull (recomendado)
+
+📌 **Modelo recomendado**:
+
+* Pull = verdad
+* Push = acelerar, no sustituir
+
+---
+
+## Diagrama de estados final
+
+```mermaid
+stateDiagram-v2
+  [*] --> USB_Boot
+
+  state "USB Supervisor" as USB_Boot {
+    [*] --> Inspect_HDD
+    Inspect_HDD --> Install_Ubuntu: no SO / wrong SO
+    Inspect_HDD --> Fix_GRUB: SO ok, cmdline wrong
+    Inspect_HDD --> Boot_HDD: everything ok
+    Install_Ubuntu --> Boot_HDD
+    Fix_GRUB --> Boot_HDD
+  }
+
+  Boot_HDD --> Ubuntu_Supervisor
+
+  state "Ubuntu Supervisor" as Ubuntu_Supervisor {
+    [*] --> CloudInit
+    CloudInit --> Ansible_Supervisor
+    Ansible_Supervisor --> PXE_Online
+  }
+
+  PXE_Online --> PXE_Menu
+
+  state "PXE Clients" as PXE_Menu {
+    [*] --> Menu
+    Menu --> Auto_Select: timeout
+    Menu --> Manual_Select: keypress
+
+    Auto_Select --> NAS_Install: MAC=NAS
+    Auto_Select --> Proxmox_Install: MAC=Server
+    Auto_Select --> Edge_Install: MAC=Portatil2
+
+    Manual_Select --> NAS_Install
+    Manual_Select --> Proxmox_Install
+    Manual_Select --> Edge_Install
+
+    NAS_Install --> NAS_Ansible
+    Proxmox_Install --> Proxmox_Ansible
+    Edge_Install --> Edge_Ansible
+  }
+```
+
+---
