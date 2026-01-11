@@ -1,6 +1,51 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# --- helpers ---
+log(){
+  # ISO-8601 timestamp + message to stderr (visible even if stdout is redirected)
+  printf "%s %s\n" "$(date -Iseconds 2>/dev/null || date)" "[+] $*" >&2
+}
+warn(){ log "[WARN] $*"; }
+die(){ log "[ERROR] $*"; exit 1; }
+require_root(){ [ "$(id -u)" -eq 0 ] || die "Este script debe ejecutarse como root (sudo)."; }
+cmd_exists(){ command -v "$1" >/dev/null 2>&1; }
+
+# Busybox/old util-linux compatibility: get disk size (bytes) from sysfs if possible
+disk_size_bytes(){
+  local dev="$1" b
+  b="$(basename "$dev")"
+  if [ -r "/sys/block/$b/size" ]; then
+    # /sys/block/<dev>/size is number of 512-byte sectors
+    awk '{print $1*512}' "/sys/block/$b/size" 2>/dev/null || echo 0
+  elif cmd_exists blockdev; then
+    blockdev --getsize64 "$dev" 2>/dev/null || echo 0
+  else
+    echo 0
+  fi
+}
+
+# Determine if a /dev node is a good install target disk
+is_candidate_disk(){
+  local dev="$1" b rem ro
+  b="$(basename "$dev")"
+  case "$b" in
+    loop*|ram*|sr*|fd*|zram* ) return 1 ;;
+  esac
+  [ -b "$dev" ] || return 1
+  # Skip read-only devices
+  ro="$(cat "/sys/block/$b/ro" 2>/dev/null || echo 0)"
+  [ "$ro" = "0" ] || return 1
+  # Skip removable (USB stick, SD card)
+  rem="$(cat "/sys/block/$b/removable" 2>/dev/null || echo 1)"
+  [ "$rem" = "0" ] || return 1
+  # Must have some reasonable size (> 2GiB)
+  local sz; sz="$(disk_size_bytes "$dev")"
+  [ "$sz" -ge $((2*1024*1024*1024)) ] || return 1
+  return 0
+}
+
+
 load_persist_env(){
 	CANDIDATE_ENV_FILE=""
 	if [ -f "$TCE_DIR/ENV/installer.env" ]; then
@@ -53,83 +98,94 @@ is_excluded_uuid(){
 }
 
 disk_has_excluded_uuid(){
-	local disk="$1"
-	[ -b "$disk" ] || return 1
-	for part in $(lsblk -nr -o NAME -l "$disk"); do
-		p="/dev/$part"
-		[ -b "$p" ] || continue
-		puuid=$(blkid -s UUID -o value "$p" 2>/dev/null || true)
-		ppartuuid=$(blkid -s PARTUUID -o value "$p" 2>/dev/null || true)
-		if is_excluded_uuid "$puuid" || is_excluded_uuid "$ppartuuid"; then
-			return 0
-		fi
-	done
-	return 1
+  local disk="$1" part p puuid ppartuuid
+  log "Comprobando si el disco $disk tiene UUID excluidos..."
+  [ -b "$disk" ] || return 1
+
+  while IFS= read -r part; do
+    p="/dev/$part"
+	log "  - comprobando partición $p ..."
+    [ -b "$p" ] || continue
+    puuid="$(blkid -s UUID -o value "$p" 2>/dev/null || true)"
+    ppartuuid="$(blkid -s PARTUUID -o value "$p" 2>/dev/null || true)"
+	log "    - UUID=$puuid PARTUUID=$ppartuuid"
+	log "    - EXCLUDE_UUIDS=${EXCLUDE_UUIDS[*]:-}"
+    if is_excluded_uuid "$puuid" || is_excluded_uuid "$ppartuuid"; then
+      return 0
+    fi
+  done < <(lsblk -nr -o NAME "$disk" 2>/dev/null || true)
+
+  return 1
 }
 
 choose_disk_by_priority(){
-	best=""
-	best_score=0
-	for dev in /sys/block/*; do
-		b=$(basename "$dev")
-		case "$b" in
-			loop*|ram*|sr*) continue ;;
-		esac
-		if [ -f "$dev/removable" ] && [ "$(cat $dev/removable)" = "0" ]; then
-			disk="/dev/$b"
-			if disk_has_excluded_uuid "$disk"; then
-				log "Excluyendo disco $disk por EXCLUDE_UUID presente en partición"
-				continue
-			fi
-			tran_file="/sys/block/$b/device/transport"
-			tran=$(cat "$tran_file" 2>/dev/null || true)
-			rotational_file="/sys/block/$b/queue/rotational"
-			rotational=$(cat "$rotational_file" 2>/dev/null || echo 1)
-			size=$(lsblk -nb -o SIZE -dn "$disk" 2>/dev/null || echo 0)
-			score=$((size+0))
-			if [ "$tran" = "nvme" ]; then
-				score=$((score + 1000000000000))
-			elif [ "$rotational" = "0" ]; then
-				score=$((score + 500000000000))
-			fi
-			if [ "$score" -gt "$best_score" ]; then
-				best_score=$score
-				best="$disk"
-			fi
-		fi
-	done
-	if [ -n "$best" ]; then
-		echo "$best"
-		return 0
-	fi
-	return 1
+  local best="" best_score=0 dev b disk tran rotational size score
+
+  for dev in /sys/block/*; do
+    b="$(basename "$dev")"
+    case "$b" in loop*|ram*|sr*|fd*|zram*) continue ;; esac
+    [ -f "$dev/removable" ] || continue
+    [ "$(cat "$dev/removable" 2>/dev/null || echo 1)" = "0" ] || continue
+
+    disk="/dev/$b"
+
+    # si quieres seguir usando exclude, deja disk_has_excluded_uuid pero robusto
+    if disk_has_excluded_uuid "$disk"; then
+      continue
+    fi
+
+    tran="$(cat "/sys/block/$b/device/transport" 2>/dev/null || true)"
+    rotational="$(cat "/sys/block/$b/queue/rotational" 2>/dev/null || echo 1)"
+    size="$(disk_size_bytes "$disk")"
+
+    score=$((size))
+    if [ "$tran" = "nvme" ]; then
+      score=$((score + 1000000000000))
+    elif [ "$rotational" = "0" ]; then
+      score=$((score + 500000000000))
+    fi
+
+	echo "Disco candidato: $disk (tran=$tran, rotational=$rotational, size=$size) -> score=$score"
+
+    if [ "$score" -gt "$best_score" ]; then
+      best_score=$score
+      best="$disk"
+    fi
+  done
+
+  [ -n "$best" ] && { echo "$best"; return 0; }
+  return 1
 }
 
 detect_internal_disk(){
-	if [ -n "${TEST_DISK:-}" ]; then
-		if [ -b "${TEST_DISK}" ]; then
-			echo "${TEST_DISK}"
-			return 0
-		fi
-	fi
-    
-	for dev in /sys/block/*; do
-		b=$(basename "$dev")
-		case "$b" in
-			loop*|ram*|sr*) continue ;;
-		esac
-		if [ -f "$dev/removable" ] && [ "$(cat $dev/removable)" = "0" ]; then
-			tran_file="/sys/block/$b/device/transport"
-			if [ -e "$tran_file" ]; then
-				tran=$(cat "$tran_file" 2>/dev/null || true)
-			else
-				tran=""
-			fi
-			echo "/dev/$b"
-			return 0
-		fi
-	done
-	return 1
+  # If caller forces a specific disk (useful for tests)
+  if [ -n "${TEST_DISK:-}" ]; then
+    [ -b "${TEST_DISK}" ] || die "TEST_DISK apunta a un dispositivo inválido: ${TEST_DISK}"
+    echo "${TEST_DISK}"
+    return 0
+  fi
+
+  local best_dev="" best_sz=0 dev b sz
+  for dev in /dev/*; do
+    case "$(basename "$dev")" in
+      sd[a-z]|vd[a-z]|xvd[a-z]|nvme[0-9]n[0-9]|mmcblk[0-9]|hd[a-z]) ;;
+      *) continue ;;
+    esac
+    if is_candidate_disk "$dev"; then
+      sz="$(disk_size_bytes "$dev")"
+      if [ "$sz" -gt "$best_sz" ]; then
+        best_sz="$sz"
+        best_dev="$dev"
+      fi
+    fi
+  done
+
+  if [ -n "$best_dev" ]; then
+    echo "$best_dev"
+    return 0
+  fi
+
+  return 1
 }
 
 find_partition_by_uuid(){
@@ -145,32 +201,49 @@ find_partition_by_uuid(){
 }
 
 find_os_partitions(){
-	CANDIDATES=()
-	for disk in /sys/block/*; do
-		b=$(basename "$disk")
-		case "$b" in
-			loop*|ram*|sr*) continue ;;
-		esac
-		if [ -f "$disk/removable" ] && [ "$(cat $disk/removable)" = "0" ]; then
-			dev="/dev/$b"
-			for part in $(lsblk -nr -o NAME -l "$dev"); do
-				p="/dev/$part"
-				[ -b "$p" ] || continue
-				puuid=$(blkid -s UUID -o value "$p" 2>/dev/null || true)
-                if is_excluded_uuid "$puuid"; then
-                    continue
-                fi
-				mnt=/mnt/target
-				mkdir -p "$mnt"
-				if mount -o ro "$p" "$mnt" 2>/dev/null; then
-					if [ -f "$mnt/etc/os-release" ]; then
-						CANDIDATES+=("$p")
-					fi
-					umount "$mnt" || true
-				fi
-			done
-		fi
-	done
+  CANDIDATES=()
+  local disk b dev part p puuid mnt
+
+  for disk in /sys/block/*; do
+    b="$(basename "$disk")"
+    case "$b" in
+      loop*|ram*|sr*|fd*|zram*) continue ;;
+    esac
+
+    log "Comprobando disco /dev/$b para particiones con SO..."
+
+    [ -f "$disk/removable" ] || continue
+    [ "$(cat "$disk/removable" 2>/dev/null || echo 1)" = "0" ] || continue
+
+    dev="/dev/$b"
+
+    # Particiones via sysfs: /sys/block/sda/sda1, /sys/block/nvme0n1/nvme0n1p1, etc.
+    for part in "/sys/block/$b"/"$b"*; do
+	  log "  - comprobando partición $part ..."
+      [ -e "$part" ] || continue
+      [ -d "$part" ] || continue
+
+      p="/dev/$(basename "$part")"
+      [ -b "$p" ] || continue
+	  log "    - es un dispositivo de bloque válido."
+
+      puuid="$(blkid -s UUID -o value "$p" 2>/dev/null || true)"
+      if is_excluded_uuid "$puuid"; then
+        continue
+      fi
+	  log "    - UUID=$puuid no está en EXCLUDE_UUIDS."
+
+      mnt=/mnt/target
+      mkdir -p "$mnt"
+      if mount -o ro "$p" "$mnt" 2>/dev/null; then
+        if [ -f "$mnt/etc/os-release" ]; then
+		  log "    - /etc/os-release encontrada en $p; añadiendo a candidatos."
+          CANDIDATES+=("$p")
+        fi
+        umount "$mnt" 2>/dev/null || true
+      fi
+    done
+  done
 }
 
 mount_probe_root(){
@@ -389,7 +462,8 @@ main(){
 		find_os_partitions
 		if [ ${#CANDIDATES[@]} -eq 0 ]; then
 			log "No se detectaron particiones con /etc/os-release. Seleccionando disco por prioridad."
-			disk=$(choose_disk_by_priority || true)
+			disk="$(choose_disk_by_priority 2>/dev/null | tail -n1 || true)"
+			log "------------------------------------------------------------------------------------------------------------------------------------------------------>10000"
 			if [ -z "$disk" ]; then
 				log "Fallo al seleccionar por prioridad; usando detector de disco simple."
 				disk=$(detect_internal_disk || true)
@@ -398,7 +472,7 @@ main(){
 				err "No se detectó ningún disco interno no-removible. Abortando."
 				exit 3
 			fi
-			log "Disco objetivo para instalación: $disk"
+			log "-------------------------------------------------->Disco objetivo para instalación: $disk----------------------------"
 			rootpart=""
 		elif [ ${#CANDIDATES[@]} -eq 1 ]; then
 			rootpart="${CANDIDATES[0]}"
@@ -473,6 +547,36 @@ if [ "$(id -u)" -ne 0 ]; then
 	exit 2
 fi
 
-log(){ echo "[+] $*"; }
-err(){ echo "[!] $*" >&2; }
+log "###########################################CHANGE TEST_MODE TO 0 TO DO ACTUAL INSTALLATION###########################################"
 main "$@"
+
+# Testing with QEMU (adjust /dev/sdX to your test disk):
+# sudo qemu-system-x86_64 \
+#   -enable-kvm \
+#   -m 4096 \
+#   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+#   -drive if=pflash,format=raw,file=./OVMF_VARS.fd \
+#   \
+#   -device qemu-xhci,id=xhci \
+#   -drive file=/dev/sdc,format=raw,if=none,id=usb0,snapshot=on \
+#   -device usb-storage,drive=usb0,bootindex=0 \
+#   \
+#   -device ich9-ahci,id=ahci \
+#   -drive file=testdisk.qcow2,format=qcow2,if=none,id=sata_hdd \
+#   -device ide-hd,drive=sata_hdd,bus=ahci.0,bootindex=3 \
+#   \
+#   -drive file=ssd.qcow2,format=qcow2,if=none,id=ssd0 \
+#   -device virtio-blk-pci,drive=ssd0,bootindex=4 \
+#   \
+#   -drive file=nvme.qcow2,format=qcow2,if=none,id=nv0 \
+#   -device nvme,drive=nv0,serial=nvme-0001,bootindex=5 \
+#   \
+#   -device virtio-scsi-pci,id=scsi0 \
+#   -drive file=scsi.qcow2,format=qcow2,if=none,id=sc0 \
+#   -device scsi-hd,drive=sc0,bus=scsi0.0,rotation_rate=7200,bootindex=6 \
+#   \
+#   -netdev user,id=net0 \
+#   -device e1000,netdev=net0,bootindex=99 \
+#   \
+#   -boot menu=on \
+#   -serial mon:stdio

@@ -9,3 +9,5 @@ e2fsprogs.tcz
 parted.tcz
 dosfstools.tcz
 efibootmgr.tcz
+bash-completion.tcz
+bash.tcz
