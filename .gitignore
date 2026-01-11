@@ -10,6 +10,11 @@ systemrescue-12.03-amd64.iso
 *.tcz
 *.tcz.*
 
+*.fd
+*.qcow2
+*.img
+*.iso.sha256
+
 .boot_repository
 
 autoinstall-usb/work

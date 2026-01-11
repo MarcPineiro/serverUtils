@@ -24,17 +24,16 @@ ENV_TCE="$TCE_DIR/autoprov.env"
 LOG_DIR="/etc/sysconfig/tcedir/logs"
 mkdir -p "$LOG_DIR" >/dev/null 2>&1 || true
 LOG="$LOG_DIR/autoprov.log"
-exec >>"$LOG" 2>&1
+#exec >>"$LOG" 2>&1
 set -x
 
 FLAG_PATH="/etc/sysconfig/tcedir/${RUN_ONCE_FLAG_REL}"
 
-if [ "$RUN_ONCE" = "1" ] && [ -f "$FLAG_PATH" ]; then
-  echo "[autoprov] RUN_ONCE enabled and flag exists: $FLAG_PATH -> skipping"
-  exit 0
-fi
+# if [ "$RUN_ONCE" = "1" ] && [ -f "$FLAG_PATH" ]; then
+#   echo "[autoprov] RUN_ONCE enabled and flag exists: $FLAG_PATH -> skipping"
+#   exit 0
+# fi
 
-# Esperar red
 i=0
 while [ "$i" -lt "$NET_WAIT_SECONDS" ]; do
   ip route | grep -q '^default' && break
@@ -63,7 +62,7 @@ fi
 if [ "$ok" = "1" ]; then
   chmod +x "$TMP_BOOT"
   echo "[autoprov] Running downloaded bootstrap: $GITHUB_BOOTSTRAP_URL"
-  sh "$TMP_BOOT" $BOOTSTRAP_ARGS || ok="0"
+  bash "$TMP_BOOT" $BOOTSTRAP_ARGS || ok="0"
 else
   echo "[autoprov] Download failed, will use fallback"
 fi
@@ -71,7 +70,7 @@ fi
 if [ "$ok" != "1" ]; then
   if [ -x "$FALLBACK_SCRIPT" ]; then
     echo "[autoprov] Running fallback: $FALLBACK_SCRIPT"
-    sh "$FALLBACK_SCRIPT" || true
+    bash "$FALLBACK_SCRIPT" || true
   else
     echo "[autoprov] Fallback script missing/not executable: $FALLBACK_SCRIPT"
   fi

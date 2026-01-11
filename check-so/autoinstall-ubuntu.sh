@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -exuo pipefail
 
 load_persist_env(){
 	CANDIDATE_ENV_FILE=""
@@ -476,3 +476,13 @@ fi
 log(){ echo "[+] $*"; }
 err(){ echo "[!] $*" >&2; }
 main "$@"
+
+# Testing with QEMU (adjust /dev/sdX to your test disk):
+# sudo qemu-system-x86_64 \
+#   -enable-kvm \
+#   -m 4096 \
+#   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+#   -drive if=pflash,format=raw,file=./OVMF_VARS.fd \
+#   -drive file=/dev/sdX,format=raw,media=disk,snapshot=on \
+#   -boot menu=on \
+#   -serial mon:stdio
