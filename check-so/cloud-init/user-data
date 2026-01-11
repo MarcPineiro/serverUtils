@@ -8,7 +8,8 @@ autoinstall:
     hostname: supervisor
     username: autoprov
     # Contraseña: autoprov (hash generado con: openssl passwd -6 'autoprov')
-    password: "$6$rounds=4096$abcdefghijklmno$7JhYfLw0F7CXn5h8K9q2/W1n3m4p5q6r7s8t9u0v1w2x3y4z5a6b7c8d9e0f"
+    # password: "$6$rounds=4096$abcdefghijklmno$7JhYfLw0F7CXn5h8K9q2/W1n3m4p5q6r7s8t9u0v1w2x3y4z5a6b7c8d9e0f"
+    password: "$6$rPiHey1LeC4l9nop$UN/9IacaNFfLQYvGvzuj1TxnHE83PKzhXt0ArZ/5TOjPdPfG3nUDFiQB36yrnv.k4udafqHXMRP0rbo3Sbma40"
   ssh:
     install-server: true
     # Permitir login con contraseña (en producción usar SSH keys)

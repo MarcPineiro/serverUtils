@@ -1,25 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# autoinstall-ubuntu.sh
-# Fase 1: Detecta disco interno, comprueba SO / versión / GRUB, y
-# si hace falta instala/repara Ubuntu 24.04 LTS con cloud-init NoCloud
-# Nota: ejecutar como root desde un live-USB supervisor.
-
-SEED_URL="https://raw.githubusercontent.com/MarcPineiro/serverUtils/refs/heads/main/check-so/cloud-init/"
-CONFIG_VERSION="1"
-RELEASE="24.04"
-ARCH="amd64"
-
-# Optional environment inputs (can be set in .env on TINYDATA/PERSIST):
-# CHECK_UUID: If set, must be the UUID of the partition to check (root partition UUID).
-#             If provided and found, script will operate on that partition; otherwise it fails.
-# EXCLUDE_UUID: If set, any partition with this UUID will be ignored (useful to exclude the USB).
-# Other variables (SEED_URL, CONFIG_VERSION, etc.) may be overridden in the .env.
-# Default TCE_DIR (can be overridden for testing)
-TCE_DIR="${TCE_DIR:-/etc/sysconfig/tcedir}"
-
-# Load installer env from $TCE_DIR/ENV/installer.env or $TCE_DIR/installer.env
 load_persist_env(){
 	CANDIDATE_ENV_FILE=""
 	if [ -f "$TCE_DIR/ENV/installer.env" ]; then
@@ -39,14 +20,14 @@ load_persist_env(){
 	return 1
 }
 
-# Initialize environment from TCE_DIR if available
-load_persist_env || true
-
-# Ensure optional env vars have defaults (empty when not provided)
 CHECK_UUID="${CHECK_UUID:-}"
 EXCLUDE_UUID="${EXCLUDE_UUID:-}"
+SEED_URL="${SEED_URL:-https://raw.githubusercontent.com/MarcPineiro/serverUtils/refs/heads/main/check-so/cloud-init/}"
+CONFIG_VERSION="${CONFIG_VERSION:-1}"
+RELEASE="${RELEASE:-24.04}"
+ARCH="${ARCH:-amd64}"
+TCE_DIR="${TCE_DIR:-/etc/sysconfig/tcedir}"
 
-# Support multiple EXCLUDE_UUID values (comma-separated); build array EXCLUDE_UUIDS
 parse_exclude_uuids(){
 	EXCLUDE_UUIDS=()
 	if [ -n "${EXCLUDE_UUID:-}" ]; then
@@ -72,7 +53,6 @@ is_excluded_uuid(){
 }
 
 disk_has_excluded_uuid(){
-	# Return 0 (true) if any partition on disk has an excluded UUID or PARTUUID
 	local disk="$1"
 	[ -b "$disk" ] || return 1
 	for part in $(lsblk -nr -o NAME -l "$disk"); do
@@ -88,8 +68,6 @@ disk_has_excluded_uuid(){
 }
 
 choose_disk_by_priority(){
-	# Choose best non-removable disk excluding those with excluded UUIDs.
-	# Priority: NVMe > SSD (non-rotational) > rotational; then by size.
 	best=""
 	best_score=0
 	for dev in /sys/block/*; do
@@ -99,21 +77,16 @@ choose_disk_by_priority(){
 		esac
 		if [ -f "$dev/removable" ] && [ "$(cat $dev/removable)" = "0" ]; then
 			disk="/dev/$b"
-			# skip if any partition on this disk is excluded
 			if disk_has_excluded_uuid "$disk"; then
 				log "Excluyendo disco $disk por EXCLUDE_UUID presente en partición"
 				continue
 			fi
-			# detect transport and rotational
 			tran_file="/sys/block/$b/device/transport"
 			tran=$(cat "$tran_file" 2>/dev/null || true)
 			rotational_file="/sys/block/$b/queue/rotational"
 			rotational=$(cat "$rotational_file" 2>/dev/null || echo 1)
-			# size in bytes
 			size=$(lsblk -nb -o SIZE -dn "$disk" 2>/dev/null || echo 0)
-			# base score: size
 			score=$((size+0))
-			# bonuses
 			if [ "$tran" = "nvme" ]; then
 				score=$((score + 1000000000000))
 			elif [ "$rotational" = "0" ]; then
@@ -132,39 +105,26 @@ choose_disk_by_priority(){
 	return 1
 }
 
-parse_exclude_uuids
-
-if [ "$(id -u)" -ne 0 ]; then
-	echo "Este script debe ejecutarse como root." >&2
-	exit 2
-fi
-
-log(){ echo "[+] $*"; }
-err(){ echo "[!] $*" >&2; }
-
 detect_internal_disk(){
-	# Allow test override via env var TEST_DISK
 	if [ -n "${TEST_DISK:-}" ]; then
 		if [ -b "${TEST_DISK}" ]; then
 			echo "${TEST_DISK}"
 			return 0
 		fi
 	fi
-	# Return first non-removable block device excluding loop and ram
+    
 	for dev in /sys/block/*; do
 		b=$(basename "$dev")
 		case "$b" in
 			loop*|ram*|sr*) continue ;;
 		esac
 		if [ -f "$dev/removable" ] && [ "$(cat $dev/removable)" = "0" ]; then
-			# Prefer non-USB (check transport)
 			tran_file="/sys/block/$b/device/transport"
 			if [ -e "$tran_file" ]; then
 				tran=$(cat "$tran_file" 2>/dev/null || true)
 			else
 				tran=""
 			fi
-			# skip NVMe namesp devices? keep them
 			echo "/dev/$b"
 			return 0
 		fi
@@ -175,7 +135,6 @@ detect_internal_disk(){
 find_partition_by_uuid(){
 	local uuid="$1"
 	if [ -z "$uuid" ]; then return 1; fi
-	# blkid -U returns device path or non-zero
 	if dev=$(blkid -U "$uuid" 2>/dev/null); then
 		if [ -b "$dev" ]; then
 			echo "$dev"
@@ -186,7 +145,6 @@ find_partition_by_uuid(){
 }
 
 find_os_partitions(){
-	# Populate global CANDIDATES array with partitions that contain /etc/os-release
 	CANDIDATES=()
 	for disk in /sys/block/*; do
 		b=$(basename "$disk")
@@ -198,11 +156,10 @@ find_os_partitions(){
 			for part in $(lsblk -nr -o NAME -l "$dev"); do
 				p="/dev/$part"
 				[ -b "$p" ] || continue
-				# skip excluded UUID
 				puuid=$(blkid -s UUID -o value "$p" 2>/dev/null || true)
-							if is_excluded_uuid "$puuid"; then
-								continue
-							fi
+                if is_excluded_uuid "$puuid"; then
+                    continue
+                fi
 				mnt=/mnt/target
 				mkdir -p "$mnt"
 				if mount -o ro "$p" "$mnt" 2>/dev/null; then
@@ -220,14 +177,11 @@ mount_probe_root(){
 	local disk="$1"
 	local mnt="/mnt/target"
 	mkdir -p "$mnt"
-	# Try partitions
 	for part in $(lsblk -nr -o NAME -l "$disk"); do
 		p="/dev/$part"
 		[ -b "$p" ] || continue
-		# avoid trying to mount an EFI FAT as root candidate
 		fstype=$(blkid -o value -s TYPE "$p" 2>/dev/null || true)
 		if [ -z "$fstype" ]; then
-			# attempt to mount readonly to inspect
 			:
 		fi
 		rm -rf "$mnt"/* 2>/dev/null || true
@@ -253,7 +207,6 @@ check_os_version(){
 		return 2
 	fi
 	. "$mnt/etc/os-release"
-	# VERSION_ID may be like "24.04" or similar
 	VERSION_ID_STR=${VERSION_ID:-}
 	umount "$mnt" || true
 	if [ "$VERSION_ID_STR" = "$RELEASE" ]; then
@@ -268,7 +221,6 @@ check_grub_cmdline(){
 	local mnt="/mnt/target"
 	mkdir -p "$mnt"
 	mount -o ro "$rootp" "$mnt"
-	# Look for ds=nocloud in boot grub.cfg or /etc/default/grub
 	found=1
 	if grep -q "ds=nocloud" "$mnt/boot/grub/grub.cfg" 2>/dev/null; then
 		found=0
@@ -298,10 +250,8 @@ install_with_debootstrap(){
 	log "Instalando Ubuntu $RELEASE en $disk (debootstrap) o simulación si TEST_MODE=1)."
 	if [ "${TEST_MODE:-0}" = "1" ]; then
 		log "TEST_MODE=1: simulando instalación mínima en $disk"
-		# Assume partitions exist; find root partition candidate
 		rootp=$(mount_probe_root "$disk" || true)
 		if [ -z "$rootp" ]; then
-			# try first partition
 			part=$(lsblk -nr -o NAME -l "$disk" | awk 'NR==1{print $1}') || true
 			rootp="/dev/$part"
 		fi
@@ -316,7 +266,6 @@ VERSION_ID="${RELEASE}"
 EOF
 		mkdir -p "$mnt/var/lib/autoprov"
 		echo "$CONFIG_VERSION" > "$mnt/var/lib/autoprov/config_version"
-		# create minimal grub files
 		mkdir -p "$mnt/boot/grub"
 		echo "set default=0" > "$mnt/boot/grub/grub.cfg"
 		echo 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"' > "$mnt/etc/default/grub"
@@ -325,7 +274,6 @@ EOF
 		return 0
 	fi
 
-	# Real installation path (destructive). Keep original behavior.
 	log "Real installation: this will modify $disk. Proceeding..."
 	apt-get update || true
 	apt-get install -y debootstrap gdisk dosfstools grub-efi-amd64 shim-signed wget || true
@@ -517,4 +465,14 @@ main(){
 	fi
 }
 
+load_persist_env || true
+parse_exclude_uuids
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "Este script debe ejecutarse como root." >&2
+	exit 2
+fi
+
+log(){ echo "[+] $*"; }
+err(){ echo "[!] $*" >&2; }
 main "$@"
