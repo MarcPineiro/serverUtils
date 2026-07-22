@@ -1,0 +1,38 @@
+---
+# Safe example inventory for config/schema/machines.schema.json.
+# All MACs and serials below are fake placeholders (documentation-only).
+machines:
+  supervisor-01:
+    role: supervisor
+    mac: "de:ad:be:ef:00:01"
+    disk_serial: "EXAMPLE-SUP-0001"
+    hostname: "supervisor-01"
+    ip: "192.0.2.10"
+    vars:
+      management_interface: "eth0"
+      pxe_interface: "eth1"
+
+  nas-01:
+    role: nas
+    mac: "de:ad:be:ef:00:02"
+    disk_serial: "EXAMPLE-NAS-BOOT-0001"
+    hostname: "nas-01"
+    ip: "192.0.2.20"
+    vars:
+      data_disks:
+        - serial: "EXAMPLE-NAS-DATA-0001"
+          initialize: false
+
+  proxmox-01:
+    role: proxmox
+    mac: "de:ad:be:ef:00:03"
+    disk_serial: "EXAMPLE-PVE-0001"
+    hostname: "proxmox-01"
+    ip: "192.0.2.30"
+
+  edge-01:
+    role: edge
+    mac: "de:ad:be:ef:00:04"
+    disk_serial: "EXAMPLE-EDGE-0001"
+    hostname: "edge-01"
+    ip: "192.0.2.40"

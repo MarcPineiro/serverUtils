@@ -20,3 +20,11 @@ systemrescue-12.03-amd64.iso
 autoinstall-usb/work
 
 .vagrant/
+
+# Phase 0: developer tooling / test harness artifacts
+tests/tmp/
+tests/**/*.log
+.cache/
+node_modules/
+*.bats.log
+build-manifest.json

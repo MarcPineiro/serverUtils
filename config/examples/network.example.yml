@@ -1,0 +1,17 @@
+---
+# Safe example for config/schema/network.schema.json.
+# Uses TEST-NET-1 (RFC 5737, 192.0.2.0/24) documentation addresses only.
+management_interface: "eth0"
+management_address: "192.0.2.10"
+
+pxe_interface: "eth1"
+pxe_address: "198.51.100.1"
+pxe_subnet: "198.51.100.0/24"
+pxe_dhcp_start: "198.51.100.50"
+pxe_dhcp_end: "198.51.100.200"
+pxe_gateway: "198.51.100.1"
+pxe_dns:
+  - "198.51.100.1"
+pxe_domain: "provisioning.example.test"
+pxe_http_url: "http://198.51.100.1/"
+allow_default_route_interface: false

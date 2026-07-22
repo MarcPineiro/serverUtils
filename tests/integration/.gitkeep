@@ -1,0 +1,4 @@
+# tests/integration
+#
+# QEMU/libvirt integration tests populated starting in Phase 1 (deterministic
+# USB boot). Empty in Phase 0 by design; see docs/test-lab.md.

@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://serverutils.local/schema/machines.schema.json",
+  "title": "Machine inventory",
+  "description": "Registered machines that the supervisor/PXE flow is allowed to install or converge. Keys are unique machine IDs (Phase 6 render script additionally rejects duplicate MACs/hostnames/IPs).",
+  "type": "object",
+  "properties": {
+    "machines": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]{1,62}$"
+      },
+      "additionalProperties": {
+        "$ref": "#/definitions/machine"
+      }
+    }
+  },
+  "required": ["machines"],
+  "additionalProperties": false,
+  "definitions": {
+    "machine": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": ["supervisor", "nas", "proxmox", "edge"],
+          "description": "Determines which PXE template, autoinstall/preseed seed, and Ansible playbook apply to this machine."
+        },
+        "mac": {
+          "type": "string",
+          "description": "Normalized lowercase colon-separated MAC address of the boot NIC.",
+          "pattern": "^([0-9a-f]{2}:){5}[0-9a-f]{2}$"
+        },
+        "disk_serial": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact disk serial the installer must target. Required for every machine because every role performs a destructive OS installation."
+        },
+        "hardware_serial": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional chassis/motherboard serial used as an additional identity check."
+        },
+        "hostname": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+        },
+        "ip": {
+          "type": "string",
+          "format": "ipv4"
+        },
+        "vars": {
+          "type": "object",
+          "description": "Role-specific variables consumed by later phases (network_config, storage layout, etc.).",
+          "additionalProperties": true
+        }
+      },
+      "required": ["role", "mac", "disk_serial"],
+      "additionalProperties": false
+    }
+  }
+}

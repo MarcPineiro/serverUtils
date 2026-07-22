@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://serverutils.local/schema/installer.schema.json",
+  "title": "USB installer/controller runtime settings",
+  "description": "Structured contract for the values currently stored in autoinstall-usb/bootstrap/installer.env. Phase 2 replaces the sourced env file with strict KEY=VALUE parsing against this schema; this file is the validated (YAML/JSON) representation used for linting and future rendering.",
+  "type": "object",
+  "properties": {
+    "EXCLUDE_UUID": {
+      "type": "array",
+      "description": "Filesystem UUIDs or PARTUUIDs that must never be selected as an install/repair target.",
+      "items": {
+        "type": "string",
+        "pattern": "^([0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$"
+      },
+      "default": []
+    },
+    "CHECK_UUID": {
+      "type": "string",
+      "description": "When multiple OS roots exist, the exact UUID to treat as the intended supervisor root. Empty string means unset.",
+      "pattern": "^([0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|)$"
+    },
+    "SEED_URL": {
+      "type": "string",
+      "description": "Base URL of the NoCloud cloud-init seed directory served over HTTPS.",
+      "pattern": "^https://[^\\s]+$"
+    },
+    "CONFIG_VERSION": {
+      "type": ["integer", "string"],
+      "description": "Desired configuration version. Integer initially; may later be a Git commit SHA (40 hex chars).",
+      "pattern": "^([0-9]+|[0-9a-f]{40})$"
+    },
+    "RELEASE": {
+      "type": "string",
+      "pattern": "^[0-9]{2}\\.[0-9]{2}$",
+      "default": "24.04"
+    },
+    "ARCH": {
+      "type": "string",
+      "enum": ["amd64", "arm64"],
+      "default": "amd64"
+    },
+    "TCE_DIR": {
+      "type": "string",
+      "pattern": "^/",
+      "default": "/etc/sysconfig/tcedir"
+    },
+    "RUN_ONCE": {
+      "type": "boolean",
+      "default": true
+    },
+    "DRY_RUN": {
+      "type": "boolean",
+      "default": true,
+      "description": "Global safety rule #4: DRY_RUN is the default until the physical installation phase is accepted."
+    },
+    "ALLOW_DESTRUCTIVE": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "required": ["SEED_URL", "CONFIG_VERSION", "RELEASE", "ARCH"],
+  "additionalProperties": false
+}

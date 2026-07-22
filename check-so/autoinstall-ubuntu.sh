@@ -555,24 +555,24 @@ main "$@"
 #   -enable-kvm \
 #   -m 4096 \
 #   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
-#   -drive if=pflash,format=raw,file=./OVMF_VARS.fd \
+#   -drive if=pflash,format=raw,file=../tests/fixtures/OVMF_VARS.fd \
 #   \
 #   -device qemu-xhci,id=xhci \
 #   -drive file=/dev/sdc,format=raw,if=none,id=usb0,snapshot=on \
 #   -device usb-storage,drive=usb0,bootindex=0 \
 #   \
 #   -device ich9-ahci,id=ahci \
-#   -drive file=testdisk.qcow2,format=qcow2,if=none,id=sata_hdd \
+#   -drive file=../tests/fixtures/testdisk.qcow2,format=qcow2,if=none,id=sata_hdd \
 #   -device ide-hd,drive=sata_hdd,bus=ahci.0,bootindex=3 \
 #   \
-#   -drive file=ssd.qcow2,format=qcow2,if=none,id=ssd0 \
+#   -drive file=../tests/fixtures/ssd.qcow2,format=qcow2,if=none,id=ssd0 \
 #   -device virtio-blk-pci,drive=ssd0,bootindex=4 \
 #   \
-#   -drive file=nvme.qcow2,format=qcow2,if=none,id=nv0 \
+#   -drive file=../tests/fixtures/nvme.qcow2,format=qcow2,if=none,id=nv0 \
 #   -device nvme,drive=nv0,serial=nvme-0001,bootindex=5 \
 #   \
 #   -device virtio-scsi-pci,id=scsi0 \
-#   -drive file=scsi.qcow2,format=qcow2,if=none,id=sc0 \
+#   -drive file=../tests/fixtures/scsi.qcow2,format=qcow2,if=none,id=sc0 \
 #   -device scsi-hd,drive=sc0,bus=scsi0.0,rotation_rate=7200,bootindex=6 \
 #   \
 #   -netdev user,id=net0 \

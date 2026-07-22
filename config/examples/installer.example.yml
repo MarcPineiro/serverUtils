@@ -1,0 +1,16 @@
+---
+# Safe example for config/schema/installer.schema.json.
+# Mirrors autoinstall-usb/bootstrap/installer.env; Phase 2 generates/validates
+# the real KEY=VALUE file from a document shaped like this one.
+EXCLUDE_UUID:
+  - "2EC5-FD8C"
+  - "965f1e37-340a-4c1f-852f-ee53a6ab396d"
+CHECK_UUID: ""
+SEED_URL: "https://raw.githubusercontent.com/example/serverUtils/refs/heads/main/check-so/cloud-init/"
+CONFIG_VERSION: 1
+RELEASE: "24.04"
+ARCH: "amd64"
+TCE_DIR: "/etc/sysconfig/tcedir"
+RUN_ONCE: true
+DRY_RUN: true
+ALLOW_DESTRUCTIVE: false

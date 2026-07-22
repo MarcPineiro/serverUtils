@@ -1,0 +1,30 @@
+---
+# yamllint configuration for serverUtils.
+# Covers cloud-init seeds, Ansible content (later phases), and config/ fixtures.
+extends: default
+
+yaml-files:
+  - '*.yml'
+  - '*.yaml'
+  - '.yamllint.yml'
+
+ignore: |
+  autoinstall-usb/tcz-cache/
+  autoinstall-usb/isos/
+  tests/fixtures/
+  sysrescue-testbench/*.iso
+
+rules:
+  line-length:
+    max: 120
+    level: warning
+  document-start:
+    present: true
+  truthy:
+    allowed-values: ['true', 'false', 'yes', 'no']
+    check-keys: false
+  comments:
+    min-spaces-from-content: 1
+  indentation:
+    spaces: 2
+    indent-sequences: consistent

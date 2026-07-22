@@ -1,0 +1,20 @@
+---
+# ansible-lint configuration for serverUtils.
+# The ansible/ tree is introduced starting in Phase 4; this config is prepared
+# in Phase 0 so later phases inherit consistent rules from the first commit.
+profile: production
+
+exclude_paths:
+  - .cache/
+  - tests/fixtures/
+  - autoinstall-usb/tcz-cache/
+  - autoinstall-usb/isos/
+
+use_default_rules: true
+
+# Revisit once ansible/ roles exist; kept empty deliberately so new rule
+# violations are visible instead of silently skipped.
+skip_list: []
+
+warn_list:
+  - experimental

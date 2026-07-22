@@ -143,47 +143,184 @@ by all later code.
 
 ### Code tasks
 
-- [ ] Add `Makefile` targets: `lint`, `unit`, `integration`, `test`,
+- [x] Add `Makefile` targets: `lint`, `unit`, `integration`, `test`,
   `build-usb-image`, `build-testbench`, and `clean-test-artifacts`.
-- [ ] Add `scripts/check-dependencies.sh`.
-  - [ ] Check Bash, ShellCheck, shfmt, jq, yq, curl, qemu-img,
+- [x] Add `scripts/check-dependencies.sh`.
+  - [x] Check Bash, ShellCheck, shfmt, jq, yq, curl, qemu-img,
     qemu-system-x86_64, xorriso, ansible-core, ansible-lint, yamllint, and
     dnsmasq test utilities.
-  - [ ] Print package-install hints without installing anything.
-  - [ ] Return nonzero when a required tool is absent.
-- [ ] Add `.editorconfig`.
-- [ ] Add `.yamllint.yml` and `.ansible-lint`.
-- [ ] Add `tests/unit/`, `tests/integration/`, `tests/fixtures/`, and
+  - [x] Print package-install hints without installing anything.
+  - [x] Return nonzero when a required tool is absent.
+- [x] Add `.editorconfig`.
+- [x] Add `.yamllint.yml` and `.ansible-lint`.
+- [x] Add `tests/unit/`, `tests/integration/`, `tests/fixtures/`, and
   `tests/helpers/`.
-- [ ] Choose Bats-core for shell unit tests and document how it is installed.
-- [ ] Add `scripts/lint.sh`.
-  - [ ] Run `bash -n` on Bash scripts.
-  - [ ] Run `sh -n` on POSIX shell scripts.
-  - [ ] Run ShellCheck with explicit shell dialects.
-  - [ ] Run shfmt in check mode.
-  - [ ] Run yamllint and ansible-lint.
-  - [ ] Validate cloud-init YAML syntax.
-  - [ ] Reject committed private-key formats and known secret filenames.
-- [ ] Add `config/schema/machines.schema.json`.
-  - [ ] Require unique machine IDs.
-  - [ ] Validate normalized MAC addresses.
-  - [ ] Validate roles: `supervisor`, `nas`, `proxmox`, `edge`.
-  - [ ] Require disk serials for destructive installations.
-  - [ ] Permit optional IP, hostname, hardware serial, and role variables.
-- [ ] Add `config/schema/installer.schema.json` for USB runtime settings.
-- [ ] Add `config/schema/network.schema.json` for the two-interface PXE model.
-- [ ] Add safe example files under `config/examples/` with fake addresses and
+- [x] Choose Bats-core for shell unit tests and document how it is installed.
+- [x] Add `scripts/lint.sh`.
+  - [x] Run `bash -n` on Bash scripts.
+  - [x] Run `sh -n` on POSIX shell scripts.
+  - [x] Run ShellCheck with explicit shell dialects.
+  - [x] Run shfmt in check mode.
+  - [x] Run yamllint and ansible-lint.
+  - [x] Validate cloud-init YAML syntax.
+  - [x] Reject committed private-key formats and known secret filenames.
+- [x] Add `config/schema/machines.schema.json`.
+  - [x] Require unique machine IDs.
+  - [x] Validate normalized MAC addresses.
+  - [x] Validate roles: `supervisor`, `nas`, `proxmox`, `edge`.
+  - [x] Require disk serials for destructive installations.
+  - [x] Permit optional IP, hostname, hardware serial, and role variables.
+- [x] Add `config/schema/installer.schema.json` for USB runtime settings.
+- [x] Add `config/schema/network.schema.json` for the two-interface PXE model.
+- [x] Add safe example files under `config/examples/` with fake addresses and
   fake MACs.
-- [ ] Add `scripts/validate-config.sh` to validate all non-secret configuration
+- [x] Add `scripts/validate-config.sh` to validate all non-secret configuration
   against the schemas.
-- [ ] Add `docs/test-lab.md` describing the isolated libvirt network, VM names,
+- [x] Add `docs/test-lab.md` describing the isolated libvirt network, VM names,
   virtual disk types, and physical test machine.
-- [ ] Add `docs/safety.md` documenting destructive boundaries and emergency
+- [x] Add `docs/safety.md` documenting destructive boundaries and emergency
   stop/recovery procedures.
-- [ ] Update `.gitignore` for build artifacts, test outputs, generated configs,
+- [x] Update `.gitignore` for build artifacts, test outputs, generated configs,
   QEMU disk images, and ISO files as they are introduced in later phases.
-- [ ] Move existing `check-so/*.qcow2` and `check-so/OVMF_VARS.fd` to
+- [x] Move existing `check-so/*.qcow2` and `check-so/OVMF_VARS.fd` to
   `tests/fixtures/` and update any scripts or documentation that reference them.
+
+<!--
+Implementation summary
+
+Changes applied:
+- Added Makefile with lint/unit/integration/test/build-usb-image/
+  build-testbench/clean-test-artifacts targets (ARGS passthrough for the two
+  build targets; no destructive defaults).
+- Added scripts/check-dependencies.sh checking bash, shellcheck, shfmt, jq, yq,
+  curl, qemu-img, qemu-system-x86_64, xorriso, ansible-core, ansible-lint,
+  yamllint, dnsmasq, plus bats-core and python3/jsonschema/pyyaml (needed by
+  the unit harness and validate-config.sh respectively). Prints apt/brew hints
+  only, installs nothing, exits nonzero when anything required is missing.
+- Added scripts/lint.sh: classifies tracked *.sh files by shebang (bash vs
+  sh), runs bash -n/sh -n, shellcheck -s <dialect>, shfmt -d, yamllint,
+  ansible-lint (skipped until ansible/ exists in Phase 4), cloud-init YAML
+  syntax validation (files under any cloud-init/*/{user-data,meta-data,
+  network-config}), and a secret scanner (private-key PEM/OpenSSH headers via
+  git grep, plus known secret filename patterns). No `|| true` on required
+  commands; nonzero on any failure.
+- Added scripts/validate-config.sh (+ scripts/lib/validate_config.py) which
+  matches config/examples/*.yml (and any config/*.yml) to config/schema/*.json
+  by leading filename component and validates with Draft7Validator +
+  FormatChecker, reporting the exact failing field path.
+- Added config/schema/{machines,installer,network}.schema.json and matching
+  config/examples/*.example.yml with fake MACs/serials and RFC 5737/5738
+  documentation IP ranges.
+- Added .editorconfig, .yamllint.yml, .ansible-lint.
+- Added tests/{unit,integration,fixtures,helpers}, tests/README.md
+  (bats-core install instructions: apt, npm, or pinned-tag source build), and
+  Bats tests covering the three Local-test scenarios below.
+- Added docs/test-lab.md (libvirt network/VM naming/fixture-disk mapping) and
+  docs/safety.md (destructive boundaries, emergency stop, recovery table).
+- Moved check-so/{nvme,scsi,ssd,testdisk}.qcow2 and OVMF_VARS.fd to
+  tests/fixtures/ (plain `mv`: these were already gitignored/untracked) and
+  updated the QEMU example command block in check-so/autoinstall-ubuntu.sh to
+  the new paths.
+- Updated .gitignore with tests/tmp/, *.log under tests/, .cache/,
+  node_modules/, build-manifest.json (Phase 1 artifact, ignored preemptively
+  per its naming in agent-plan Phase 1).
+
+Files created or modified:
+- `Makefile`
+- `scripts/check-dependencies.sh`
+- `scripts/lint.sh`
+- `scripts/validate-config.sh`
+- `scripts/lib/validate_config.py`
+- `config/schema/machines.schema.json`
+- `config/schema/installer.schema.json`
+- `config/schema/network.schema.json`
+- `config/examples/machines.example.yml`
+- `config/examples/network.example.yml`
+- `config/examples/installer.example.yml`
+- `.editorconfig`
+- `.yamllint.yml`
+- `.ansible-lint`
+- `docs/test-lab.md`
+- `docs/safety.md`
+- `tests/README.md`
+- `tests/helpers/bats-helpers.bash`
+- `tests/unit/validate-config.bats`
+- `tests/unit/check-dependencies.bats`
+- `tests/unit/lint-secrets.bats`
+- `tests/integration/.gitkeep`
+- `tests/fixtures/{nvme,scsi,ssd,testdisk}.qcow2`, `tests/fixtures/OVMF_VARS.fd`
+- `check-so/autoinstall-ubuntu.sh` (comment-only path update)
+- `.gitignore`
+
+Information sources:
+- Project source: `check-so/autoinstall-ubuntu.sh` (existing installer.env
+  keys: EXCLUDE_UUID, CHECK_UUID, SEED_URL, CONFIG_VERSION, RELEASE, ARCH,
+  TCE_DIR) used to shape `config/schema/installer.schema.json`.
+- Project source: `autoinstall-usb/overlay/opt/autorun/autoprov.env` and
+  `sysrescue-testbench/overlay/opt/testbench/config.env` (RUN_ONCE,
+  ALLOW_DESTRUCTIVE) cross-checked against the installer schema's safety
+  flags.
+- Plan §2.3 (network variable list) used verbatim for
+  `config/schema/network.schema.json`.
+- Plan §3 (global safety rules) used verbatim for `docs/safety.md`.
+- External: python `jsonschema` library documentation (Draft7Validator,
+  FormatChecker built-in `ipv4`/`uri` format support, no extra dependency
+  required) — confirmed by running validate-config.sh locally rather than
+  assumed.
+
+Tests performed:
+- `./scripts/validate-config.sh` (all three config/examples/*.yml) — passed.
+- `./scripts/validate-config.sh` against a scratch copy with a malformed MAC —
+  failed with `[machines.supervisor-01.mac] '...' does not match ...`
+  (exact field path), repo fixture unmodified — passed.
+- `./scripts/check-dependencies.sh` — correctly reports OK/MISSING per tool,
+  nonzero exit when tools are missing (shellcheck/shfmt/ansible-core/
+  ansible-lint/yamllint/bats were missing in this dev sandbox by default) —
+  passed.
+- `./scripts/check-dependencies.sh` with `PATH` restricted to
+  `/usr/bin:/bin:/usr/sbin:/sbin` — reports `MISSING shellcheck`, exits
+  nonzero — passed.
+- `./scripts/lint.sh` (with shellcheck/shfmt/yamllint temporarily available) —
+  bash -n/sh -n: passed on all 15 tracked shell scripts; shellcheck and shfmt
+  report only pre-existing findings in files owned by later phases
+  (autoinstall-usb/build-tinycore-usb.sh, autoinstall-usb/tcz/fetch-tcz.sh,
+  autoinstall-usb overlay scripts, check-so/autoinstall-ubuntu.sh,
+  sysrescue-testbench/*) — zero findings in any Phase-0-authored script;
+  yamllint: 4 files, no findings; secret scanner: no private keys or secret
+  filenames found — overall exit nonzero solely due to the pre-existing
+  findings noted above (expected; those files are refactored in Phase 1,
+  Phase 2, and Phase 13).
+- `bats tests/unit` (7 tests) — all passed.
+- `make unit`, `make integration`, `make clean-test-artifacts`, `make help` —
+  all behave as documented; `make integration` correctly no-ops (exit 0) with
+  only `tests/integration/.gitkeep` present.
+- `make lint` — nonzero for the same pre-existing, out-of-phase-0-scope
+  reasons as the direct `./scripts/lint.sh` run above.
+
+Errors and known issues:
+- `make lint` (and `./scripts/lint.sh`) currently exit nonzero on a clean
+  checkout because pre-existing scripts in `autoinstall-usb/`, `check-so/`,
+  and `sysrescue-testbench/` do not yet conform to shellcheck/shfmt. Fixing
+  those files is explicitly in scope for Phase 1 (USB builder/overlay),
+  Phase 2 (`check-so` controller refactor), and Phase 13 (TestBench repair),
+  not Phase 0. No findings exist in any file introduced by this phase.
+- shellcheck, shfmt, ansible-core, ansible-lint, yamllint, and bats-core were
+  not preinstalled in this sandbox; they were fetched from pinned upstream
+  release sources into a scratch/tmp prefix purely to exercise the tests
+  above and are not part of the repository. `scripts/check-dependencies.sh`
+  correctly reports them missing on a stock system and prints install hints.
+
+Follow-up notes:
+- `docs/test-lab.md`'s physical test machine table is intentionally left as
+  `TBD`: no disposable hardware identity was available to record without
+  guessing. Fill it in before running any phase's physical-machine test.
+- `ansible-lint`/`yamllint` detection was intermittently flaky in this
+  specific sandboxed terminal for tools installed under `$HOME/.local/bin`
+  (writes to new paths under `$HOME` are not reliably persisted across
+  sandboxed terminal invocations here); this is a local sandbox artifact, not
+  a script defect — `command -v` is the standard, portable detection method
+  used throughout.
+-->
 
 ### Local test
 
