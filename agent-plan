@@ -1,0 +1,1293 @@
+# serverUtils implementation plan
+
+## 1. Purpose
+
+This document is the implementation roadmap for completing the architecture in
+`plan`. It covers the supervisor USB, safe Ubuntu installation, first-boot
+configuration, PXE service, client installation, continuous Ansible management,
+CI/CD, optional Terraform, and the independent SystemRescue TestBench.
+
+The work is divided into phases that can be implemented and accepted
+independently. A phase is complete only when:
+
+1. Every code task in the phase is complete.
+2. Automated local tests pass.
+3. The QEMU/libvirt integration test passes when the phase has boot or network
+   behaviour.
+4. The physical-machine test passes on disposable hardware.
+5. The acceptance evidence listed for the phase has been saved.
+6. Documentation and recovery instructions have been updated.
+
+Never test destructive disk code on a workstation containing valuable disks.
+Use sparse images first, then a VM, then a physical machine with all unrelated
+drives unplugged.
+
+## 2. Fixed architecture decisions
+
+These decisions prevent later phases from implementing incompatible designs.
+
+### 2.1 Repository layout
+
+Keep bootstrap and infrastructure configuration in this repository initially.
+Do not introduce a second infrastructure repository until the complete flow is
+working. Use these top-level directories:
+
+```text
+autoinstall-usb/        Tiny Core USB builder and runtime
+check-so/               Supervisor inspection and installer launcher
+cloud-init/             Install-time and first-boot seeds
+ansible/                All host convergence code
+pxe/                    Source templates and generated PXE fixtures
+terraform/              Optional Proxmox resources
+tests/                  Unit and integration tests
+scripts/                Developer, validation, and release commands
+docs/                   Operations, recovery, and network documentation
+sysrescue-testbench/    Hardware test environment
+```
+
+Move files only in the phase that introduces their replacement, so every commit
+remains runnable.
+
+### 2.2 Installation mechanism
+
+Remove the real `debootstrap` installation path from the Tiny Core controller.
+Tiny Core does not provide `apt-get` or `debootstrap`, so that path cannot be the
+production installer.
+
+Use the official Ubuntu Server installer kernel and initrd:
+
+1. The USB builder extracts `casper/vmlinuz` and `casper/initrd` from a pinned
+   Ubuntu Server ISO and stores them on `TINYBOOT`.
+2. The builder records the ISO URL and SHA-256 checksum in a manifest.
+3. When installation is required, Tiny Core downloads or loads the ISO and uses
+   `kexec` to start the Ubuntu installer with `autoinstall` and a NoCloud seed.
+4. The Ubuntu installer owns partitioning, filesystem creation, package
+   installation, and bootloader installation.
+5. A separate normal cloud-init seed configures the installed supervisor on its
+   first boot.
+
+Keep a `TEST_MODE` simulator for state-machine unit tests, but never let it write
+fake operating-system files to real block devices.
+
+### 2.3 Network model
+
+The supervisor must use a dedicated provisioning NIC or VLAN. Do not run an
+authoritative DHCP server on the normal household/office LAN by default.
+
+Required variables:
+
+```text
+management_interface
+management_address
+pxe_interface
+pxe_address
+pxe_subnet
+pxe_dhcp_start
+pxe_dhcp_end
+pxe_gateway
+pxe_dns
+pxe_domain
+pxe_http_url
+```
+
+Ansible must refuse to enable dnsmasq when the configured PXE interface is
+missing, has the wrong address, overlaps the management network, or is the
+default-route interface unless an explicit override is set.
+
+### 2.4 Source of truth
+
+- Git is the desired-state source of truth.
+- `ansible-pull` is the normal convergence mechanism.
+- CI push only requests or accelerates convergence.
+- Machine identity is a normalized lowercase MAC address plus an optional
+  expected hardware serial.
+- Unknown MAC addresses boot from the local disk and are never installed.
+- No password, private key, runner token, VPN private key, or API token is stored
+  in Git.
+
+### 2.5 Configuration version semantics
+
+`/var/lib/autoprov/config_version` means that Ansible completed successfully.
+The installer and USB controller must never create it pre-emptively.
+
+The file contains the exact Git configuration version, initially an integer and
+later optionally a commit SHA. The USB controller compares content, not merely
+file existence.
+
+## 3. Global safety and test rules
+
+Apply these rules in every phase:
+
+1. Destructive commands require an explicitly selected whole-disk device.
+2. Resolve and compare device major/minor numbers, not only `/dev` names.
+3. Refuse the live USB, mounted devices, the running root disk, excluded UUIDs,
+   excluded PARTUUIDs, and disks whose serial does not match inventory.
+4. `DRY_RUN=1` is the default until the physical installation phase is accepted.
+5. Noninteractive destructive mode requires all of:
+   `ALLOW_DESTRUCTIVE=1`, a matching machine identity, a matching target serial,
+   and a valid signed/hashed configuration manifest.
+6. Every external download has a pinned version and checksum.
+7. Every script uses strict error handling and returns nonzero on failure.
+8. Do not hide required-command failures behind `|| true`.
+9. Logs contain timestamps, selected machine identity, selected disk identity,
+   state transition, commands attempted, and final result.
+10. Integration tests use an isolated libvirt network with no bridge to the real
+    LAN unless the test explicitly requires it.
+
+## Phase 0 — Developer tooling, schemas, and test harness
+
+### Goal
+
+Create a repeatable development environment and define the data contracts used
+by all later code.
+
+### Code tasks
+
+- [ ] Add `Makefile` targets: `lint`, `unit`, `integration`, `test`,
+  `build-usb-image`, `build-testbench`, and `clean-test-artifacts`.
+- [ ] Add `scripts/check-dependencies.sh`.
+  - [ ] Check Bash, ShellCheck, shfmt, jq, yq, curl, qemu-img,
+    qemu-system-x86_64, xorriso, ansible-core, ansible-lint, yamllint, and
+    dnsmasq test utilities.
+  - [ ] Print package-install hints without installing anything.
+  - [ ] Return nonzero when a required tool is absent.
+- [ ] Add `.editorconfig`.
+- [ ] Add `.yamllint.yml` and `.ansible-lint`.
+- [ ] Add `tests/unit/`, `tests/integration/`, `tests/fixtures/`, and
+  `tests/helpers/`.
+- [ ] Choose Bats-core for shell unit tests and document how it is installed.
+- [ ] Add `scripts/lint.sh`.
+  - [ ] Run `bash -n` on Bash scripts.
+  - [ ] Run `sh -n` on POSIX shell scripts.
+  - [ ] Run ShellCheck with explicit shell dialects.
+  - [ ] Run shfmt in check mode.
+  - [ ] Run yamllint and ansible-lint.
+  - [ ] Validate cloud-init YAML syntax.
+  - [ ] Reject committed private-key formats and known secret filenames.
+- [ ] Add `config/schema/machines.schema.json`.
+  - [ ] Require unique machine IDs.
+  - [ ] Validate normalized MAC addresses.
+  - [ ] Validate roles: `supervisor`, `nas`, `proxmox`, `edge`.
+  - [ ] Require disk serials for destructive installations.
+  - [ ] Permit optional IP, hostname, hardware serial, and role variables.
+- [ ] Add `config/schema/installer.schema.json` for USB runtime settings.
+- [ ] Add `config/schema/network.schema.json` for the two-interface PXE model.
+- [ ] Add safe example files under `config/examples/` with fake addresses and
+  fake MACs.
+- [ ] Add `scripts/validate-config.sh` to validate all non-secret configuration
+  against the schemas.
+- [ ] Add `docs/test-lab.md` describing the isolated libvirt network, VM names,
+  virtual disk types, and physical test machine.
+- [ ] Add `docs/safety.md` documenting destructive boundaries and emergency
+  stop/recovery procedures.
+- [ ] Update `.gitignore` for build artifacts, test outputs, generated configs,
+  QEMU disk images, and ISO files as they are introduced in later phases.
+- [ ] Move existing `check-so/*.qcow2` and `check-so/OVMF_VARS.fd` to
+  `tests/fixtures/` and update any scripts or documentation that reference them.
+
+### Local test
+
+1. Run `make lint` on a clean checkout.
+2. Deliberately add a malformed MAC to a copied fixture and verify validation
+   fails with the exact field path.
+3. Deliberately add a fake private key to `/tmp`, point the secret scanner at
+   it, and verify it fails without modifying the repository.
+4. Remove one required command from `PATH` and verify the dependency checker
+   reports it and exits nonzero.
+5. Run `make unit` with no root privileges and verify it does not access real
+   block devices or networks.
+
+### Physical-machine test
+
+1. Clone the repository on the intended build workstation.
+2. Run `scripts/check-dependencies.sh` as a normal user.
+3. Install missing dependencies manually.
+4. Run `make lint unit` again.
+5. Confirm no disks, interfaces, services, or files outside the checkout were
+   changed.
+
+### Completion evidence
+
+- A log containing successful lint/unit runs.
+- Valid and invalid schema fixtures.
+- `docs/test-lab.md` identifies the disposable physical test machine and disk.
+
+## Phase 1 — Make the Tiny Core USB deterministic and single-run
+
+### Goal
+
+Produce a USB that boots reliably in UEFI and legacy BIOS modes, loads its
+persistent overlay, downloads the controller once, and has a tested offline
+fallback.
+
+### Code tasks
+
+- [ ] Refactor `autoinstall-usb/build-tinycore-usb.sh` into small functions.
+  - [ ] Add `partition_path(disk, number)` supporting `/dev/sdX`, `/dev/vdX`,
+    `/dev/mmcblkN`, `/dev/nvmeNnN`, and loop devices.
+  - [ ] Verify `--dev` is a whole disk using `lsblk TYPE=disk`.
+  - [ ] Print model, serial, size, transport, and current mounts before erasure.
+  - [ ] Require the exact target serial as the confirmation token.
+  - [ ] Add `--image PATH --image-size SIZE` for safe raw-image builds.
+  - [ ] Add an EXIT cleanup trap for mounts and loop devices.
+- [ ] Always generate a project-owned GRUB UEFI configuration rather than
+  trusting an unmodified loader from the source ISO.
+  - [ ] Add the Tiny Core kernel arguments for `tce`, `backup`, and `waitusb`.
+  - [ ] Add a normal Tiny Core entry.
+  - [ ] Add a diagnostic Tiny Core entry with verbose logging.
+  - [ ] Reserve an Ubuntu autoinstall entry for Phase 3.
+- [ ] Implement legacy BIOS/syslinux configuration patching.
+  - [ ] Patch every relevant `append` line idempotently.
+  - [ ] Verify the persistence UUID occurs exactly once per entry.
+- [ ] Add a post-build validator.
+  - [ ] Mount both partitions read-only.
+  - [ ] Verify UEFI loader, BIOS loader, kernel, initrd, `mydata.tgz`, package
+    list, cached packages, environment file, and bootstrap fallback.
+  - [ ] Verify referenced UUIDs match the actual filesystems.
+  - [ ] Emit `build-manifest.json` with hashes.
+- [ ] Replace the two potential launch paths with one authoritative path.
+  - [ ] Keep `/opt/bootlocal.sh` as the entrypoint.
+  - [ ] Remove `S99autoprov`, or make it call a lock-protected no-op wrapper.
+  - [ ] Add a `mkdir`-based boot lock that works on BusyBox.
+- [ ] Repair `autoprov-run.sh`.
+  - [ ] Re-enable `RUN_ONCE` handling.
+  - [ ] Distinguish `started`, `downloaded`, `running`, `succeeded`, and
+    `failed` state files.
+  - [ ] Write the success flag only after the downloaded controller succeeds.
+  - [ ] Add bounded network retries with clear errors.
+  - [ ] Validate downloaded content is nonempty, begins with a shell shebang,
+    and matches an optional SHA-256 from `installer.env`.
+  - [ ] Use an atomic temporary file and rename.
+  - [ ] Preserve the failed download and controller log for diagnosis.
+- [ ] Add `/opt/autorun/bootstrap.fallback.sh` to the overlay.
+  - [ ] Bundle the latest accepted controller during USB build.
+  - [ ] Record its checksum in the build manifest.
+  - [ ] Run it only after remote retries are exhausted.
+- [ ] Correct `mount-tinydata.sh` so it lists logs from the mountpoint it
+  actually mounted.
+- [ ] Remove duplicate cached `bootlocal.sh` source or generate it from the
+  overlay source during build.
+- [ ] Pin Tiny Core version and extension checksums in a manifest.
+- [ ] Document and enforce the TCZ caching pipeline.
+  - [ ] Declare `autoinstall-usb/tcz/onboot.lst` as the single canonical package
+    list; remove or generate `tcz-cache/tce/onboot.lst` during build.
+  - [ ] Document the flow: `tcz/fetch-tcz.sh` downloads to `tcz-cache/` →
+    builder copies verified packages from cache to USB `TINYDATA`.
+  - [ ] Verify all cached packages match the manifest checksums before copying.
+- [ ] Use `autoinstall-usb/isos/` as the local storage directory for offline
+  Ubuntu ISO builds (referenced by Phase 3 `--offline-installer`).
+- [ ] Add tests for malformed environment files and missing network tools.
+
+### Local test
+
+1. Build a 2 GiB raw USB image with `--image` instead of a physical disk.
+2. Attach it with a loop device and run the post-build validator.
+3. Boot it in QEMU with OVMF.
+4. Verify `/etc/sysconfig/tcedir` resolves to the data partition.
+5. Verify cached extensions load without external network access.
+6. Serve a fixture controller from a local HTTP server and verify it executes
+   exactly once even if both boot hooks are invoked manually.
+7. Reboot and verify `RUN_ONCE=1` prevents a second run.
+8. Delete the success flag, block HTTP, reboot, and verify the fallback runs.
+9. Boot the same image with SeaBIOS and repeat persistence checks.
+10. Corrupt one cached extension and verify post-build validation fails.
+
+### Physical-machine test
+
+1. Use a dedicated USB with no valuable data.
+2. Record its serial with `lsblk -o NAME,SERIAL,SIZE,MODEL`.
+3. Build the USB and type the serial confirmation.
+4. Boot a disposable PC in UEFI mode with all internal disks disconnected.
+5. Confirm Tiny Core obtains networking, loads packages, runs the controller
+   once, and stores logs on `TINYDATA`.
+6. Reboot and confirm persistence and run-once behaviour.
+7. Repeat in legacy BIOS mode if the target hardware supports it.
+8. Disconnect networking, clear the success flag, and verify fallback execution.
+9. Mount `TINYDATA` on the build workstation and inspect all expected state and
+   log files.
+
+### Completion evidence
+
+- UEFI and BIOS QEMU console logs.
+- Physical boot logs from `TINYDATA`.
+- `build-manifest.json` matching the tested USB.
+
+## Phase 2 — Refactor the supervisor state controller and enforce safety
+
+### Goal
+
+Turn `check-so/autoinstall-ubuntu.sh` into a testable state machine that can
+inspect and repair safely without accidentally selecting an excluded disk.
+
+### Code tasks
+
+- [ ] Split the controller into:
+
+  ```text
+  check-so/autoprov-controller.sh
+  check-so/lib/common.sh
+  check-so/lib/config.sh
+  check-so/lib/disks.sh
+  check-so/lib/os-state.sh
+  check-so/lib/grub-state.sh
+  check-so/lib/boot-order.sh
+  check-so/lib/state-machine.sh
+  check-so/lib/installer-launch.sh
+  ```
+
+- [ ] Keep `autoinstall-ubuntu.sh` temporarily as a compatibility wrapper.
+- [ ] Define commands: `inspect`, `plan`, `apply`, and `report`.
+- [ ] Make `inspect` and `plan` read-only and usable without destructive flags.
+- [ ] Make `apply` default to `DRY_RUN=1`.
+- [ ] Add overridable `SYS_ROOT`, `DEV_ROOT`, and command wrappers so unit tests
+  use fixtures rather than host `/sys` and `/dev`.
+- [ ] Replace undefined `err` calls with one tested error function.
+- [ ] Parse configuration without executing arbitrary shell code.
+  - [ ] Replace sourced `installer.env` with strict `KEY=VALUE` parsing.
+  - [ ] Reject unknown keys and invalid booleans, UUIDs, URLs, and versions.
+- [ ] Build a normalized disk inventory containing kernel name, canonical path,
+  major/minor, size, removable, read-only, transport, rotational flag, serial,
+  WWN, filesystem UUIDs, PARTUUIDs, mounts, and parent relationships.
+- [ ] Implement exclusion once and reuse it everywhere.
+  - [ ] Exclude the live-media parent disk.
+  - [ ] Exclude UUID and PARTUUID matches.
+  - [ ] Exclude mounted disks and the running root disk.
+  - [ ] Exclude removable disks unless specifically selected for a test.
+  - [ ] Never bypass exclusions in a fallback selector.
+- [ ] Replace numeric bonus scoring with deterministic ordered fields:
+  explicit serial, explicit UUID, NVMe, nonrotational, size, stable name.
+- [ ] Require exactly one safe target before any state-changing action.
+- [ ] If multiple OS roots exist, report all and require `CHECK_UUID`.
+- [ ] Handle no OS root as a first-class state; never call `mount` with an empty
+  source.
+- [ ] Mount probes into unique `mktemp` directories and always unmount via trap.
+- [ ] Detect encrypted, LVM, mdraid, ZFS, and unsupported layouts and return
+  `manual_intervention`, not `empty_disk`.
+- [ ] Parse `/etc/os-release` without leaking its variables globally.
+- [ ] Compare exact OS ID, release, architecture, and optional build policy.
+- [ ] Check both GRUB source configuration and generated configuration.
+- [ ] Prevent duplicate `ds=nocloud` arguments when repairing GRUB.
+- [ ] Compare `config_version` content with requested version.
+- [ ] Define state-machine outputs:
+  `ready`, `needs_config`, `needs_grub_repair`, `needs_install`,
+  `ambiguous`, `unsafe`, and `failed`.
+- [ ] Emit a JSON report and a human-readable report for every run.
+- [ ] Identify the installed Ubuntu UEFI boot entry by disk/partition GUID and
+  set `BootNext`; do not reorder an arbitrary first entry.
+- [ ] Add a global lock to prevent concurrent controller executions.
+- [ ] Remove all ignored failures from required operations.
+
+### Local test
+
+1. Add Bats fixtures for SATA, virtio, NVMe, MMC, removable USB, read-only disk,
+   multiple roots, excluded UUID, excluded PARTUUID, LVM, and empty disk.
+2. Test every state-machine input and expected output.
+3. Test that every excluded-disk scenario returns `unsafe` and never calls a
+   mocked write command.
+4. Test partition-path generation for all supported device families.
+5. Test GRUB repair twice and verify the second run makes no change.
+6. Test version values `missing`, `older`, `equal`, `newer`, and malformed.
+7. Create sparse QCOW2 disks with fixture filesystems and run `inspect` against
+   them through QEMU/NBD in an isolated CI job.
+8. Run `apply` without flags and verify it only prints a dry-run plan.
+
+### Physical-machine test
+
+1. Boot the Tiny Core USB with all internal disks disconnected; expect
+   `unsafe/no target` and no changes.
+2. Connect one blank disposable disk; verify `inspect` returns `needs_install`.
+3. Add an exclusion matching that disk; verify it returns `unsafe`.
+4. Install a fixture Ubuntu manually, omit the configuration marker, and verify
+   `needs_config`.
+5. Remove the NoCloud GRUB argument and verify `needs_grub_repair`.
+6. Add a second disk with another OS and verify the controller refuses automatic
+   selection.
+7. Capture before/after partition-table hashes during all read-only tests and
+   verify they are unchanged.
+
+### Completion evidence
+
+- Unit-test matrix covering every state.
+- JSON reports from physical scenarios.
+- Proof that excluded and ambiguous disks were not modified.
+
+## Phase 3 — Implement official Ubuntu autoinstall launch and installation
+
+### Goal
+
+Install Ubuntu 24.04 safely from Tiny Core using the supported Ubuntu installer,
+then boot the new disk with the first-boot NoCloud seed configured.
+
+### Code tasks
+
+- [ ] Pin an Ubuntu 24.04 point release, ISO URL, and SHA-256 in
+  `autoinstall-usb/bootstrap/releases.json`.
+- [ ] Extend the USB builder.
+  - [ ] Verify the source Ubuntu ISO checksum.
+  - [ ] Extract `casper/vmlinuz` and `casper/initrd` to `TINYBOOT/ubuntu/`.
+  - [ ] Store the ISO locally when `--offline-installer` is requested.
+  - [ ] Use `autoinstall-usb/isos/` as the storage path for the cached ISO;
+    add this directory to `.gitignore`.
+  - [ ] Add `kexec-tools` and required TLS/network packages to `onboot.lst`.
+- [ ] Add `cloud-init/supervisor-install/user-data` containing only Subiquity
+  autoinstall configuration.
+- [ ] Add `cloud-init/supervisor-install/meta-data`.
+- [ ] Add `cloud-init/supervisor-install/network-config` only if DHCP is not
+  sufficient during installation.
+- [ ] Build storage configuration dynamically from the validated target disk.
+  - [ ] GPT partition table.
+  - [ ] EFI System Partition.
+  - [ ] Optional BIOS boot partition only when legacy support is required.
+  - [ ] Root filesystem.
+  - [ ] Optional separate `/var` only after a documented capacity threshold.
+  - [ ] Match the disk by serial/path emitted by the controller.
+- [ ] Use an SSH public key; remove the committed password hash.
+- [ ] Install only first-boot prerequisites: cloud-init, openssh-server, Python,
+  Git, sudo, and CA certificates.
+- [ ] In installer late commands:
+  - [ ] Write the first-boot NoCloud seed URL into GRUB configuration.
+  - [ ] Run `update-grub` in-target.
+  - [ ] Save installer version and target disk identity under
+    `/var/lib/autoprov/install/`.
+  - [ ] Do not create `config_version`.
+- [ ] Implement `check-so/lib/installer-launch.sh`.
+  - [ ] Verify kernel, initrd, ISO/URL, seed URL, checksums, and network.
+  - [ ] Construct kernel arguments as an array and log their escaped form.
+  - [ ] Load the kernel with `kexec -l`.
+  - [ ] Re-read target safety immediately before execution.
+  - [ ] Execute with `kexec -e` only when destructive authorization is valid.
+- [ ] Add a local HTTP fixture server for installer ISO and NoCloud files.
+- [ ] Save Subiquity and curtin logs into the installed system for later
+  collection.
+- [ ] Add installation failure detection on next USB boot.
+  - [ ] Distinguish never started, installer failed, and installed but first boot
+    failed.
+  - [ ] Limit retries and stop after the configured threshold.
+
+### Local test
+
+1. Validate the autoinstall document with cloud-init/Subiquity validation tools.
+2. Unit-test kernel argument generation, URL escaping, checksum rejection, and
+   destructive authorization.
+3. Create a QEMU VM with one disposable SATA disk and boot Tiny Core.
+4. Serve Ubuntu ISO and seeds from the host-only test network.
+5. Let Tiny Core inspect, select the disk, and kexec into the installer.
+6. Verify the installer uses the intended disk and creates the expected GPT
+   layout.
+7. Verify the VM boots from the installed disk after installation.
+8. Verify `/etc/os-release`, SSH, GRUB NoCloud argument, installer metadata, and
+   absence of `config_version`.
+9. Repeat with virtio and NVMe disks.
+10. Break the ISO checksum and confirm installation never starts.
+11. Disconnect the network and verify the offline-installer build works, or
+    fails safely with a clear message when offline mode was not built.
+
+### Physical-machine test
+
+1. Back up the machine and unplug every disk except one disposable target.
+2. Record the target model and serial in machine inventory.
+3. Boot the USB and inspect the generated action plan.
+4. Enable destructive mode only after confirming the serial shown on screen.
+5. Observe transition from Tiny Core to Subiquity.
+6. Confirm the partitioning screen/log references only the disposable serial.
+7. Allow installation and reboot with the USB still inserted.
+8. Verify the USB reports an installed Ubuntu rather than reinstalling it.
+9. Boot the HDD directly and verify UEFI boot, network, SSH key access, and
+   first-boot datasource discovery.
+10. Reconnect other disks only after all disk identities and boot order are
+    confirmed.
+
+### Completion evidence
+
+- QEMU logs for SATA, virtio, and NVMe installs.
+- Physical Subiquity/curtin logs.
+- Before/after disk inventory proving only the selected serial changed.
+
+## Phase 4 — Implement first-boot cloud-init and the Ansible foundation
+
+### Goal
+
+Converge a newly installed supervisor through a minimal normal cloud-init seed
+and a real, idempotent Ansible playbook.
+
+### Code tasks
+
+- [ ] Add `cloud-init/supervisor-firstboot/user-data` as normal `#cloud-config`,
+  not an `autoinstall` document.
+- [ ] Add matching `meta-data` with a versioned instance ID.
+- [ ] In first-boot cloud-init:
+  - [ ] Create the automation user with SSH keys and locked password.
+  - [ ] Install Git, Python, Ansible, CA certificates, and systemd prerequisites.
+  - [ ] Clone this repository to a versioned working directory.
+  - [ ] Verify repository origin and optional signed commit/pinned revision.
+  - [ ] Run `ansible-pull` using `ansible/playbooks/supervisor.yml`.
+  - [ ] Capture stdout, stderr, exit status, and commit SHA.
+  - [ ] Write a failure marker on error.
+  - [ ] Never write the success version itself; Ansible owns it.
+- [ ] Create the Ansible foundation:
+
+  ```text
+  ansible/ansible.cfg
+  ansible/requirements.yml
+  ansible/inventories/test/hosts.yml
+  ansible/inventories/production/hosts.yml
+  ansible/group_vars/all.yml
+  ansible/host_vars/examples/
+  ansible/playbooks/supervisor.yml
+  ansible/roles/common/
+  ansible/roles/supervisor_base/
+  ansible/roles/config_version/
+  ```
+
+- [ ] Implement `common` role.
+  - [ ] Package baseline.
+  - [ ] Timezone, locale, NTP, resolver prerequisites, and log rotation.
+  - [ ] SSH hardening after key access is verified.
+  - [ ] Dedicated automation user and sudo policy.
+  - [ ] Firewall baseline that does not yet expose PXE services.
+- [ ] Implement `supervisor_base` role.
+  - [ ] Create `/srv/autoprov`, `/var/lib/autoprov`, and log directories.
+  - [ ] Store deployed Git revision and machine identity.
+  - [ ] Install operational diagnostic commands.
+- [ ] Implement `config_version` role as the final role.
+  - [ ] Run only after all prior roles succeed.
+  - [ ] Atomically write exact desired version and commit SHA.
+  - [ ] Write a timestamp and last-success report.
+- [ ] Add handlers and avoid unconditional service restarts.
+- [ ] Add `changed_when` and `failed_when` wherever command modules are used.
+- [ ] Add a redacted diagnostic bundle script.
+- [ ] Make the old `check-so/cloud-init/user-data` a documented compatibility
+  redirect or remove it after all URLs use the new paths.
+- [ ] Remove the empty `check-so/ansible/` placeholder directory now that the
+  top-level `ansible/` structure exists.
+- [ ] Document and bootstrap secret management.
+  - [ ] Choose Ansible Vault (simplest for single-repo) or SOPS+age and document
+    the decision in `docs/secrets.md`.
+  - [ ] Create the vault structure or encrypted-file conventions.
+  - [ ] Add vault-password/age-key retrieval to `scripts/check-dependencies.sh`.
+  - [ ] Add a safe example encrypted variable file under
+    `ansible/group_vars/all/vault_example.yml`.
+  - [ ] Ensure `ansible-pull` can decrypt secrets without interactive prompts
+    (password file, environment variable, or agent).
+
+### Local test
+
+1. Run yamllint, ansible-lint, and `ansible-playbook --syntax-check`.
+2. Run the playbook in an Ubuntu 24.04 container or VM.
+3. Run it a second time and require `changed=0` except explicitly variable
+   runtime facts.
+4. Force one role to fail and verify `config_version` is absent and a failure
+   report exists.
+5. Restore the role, rerun, and verify version and commit contents.
+6. Boot the Phase 3 VM with the local first-boot seed.
+7. Verify cloud-init reaches `status: done`, Ansible succeeds, and SSH remains
+   accessible.
+8. Reboot twice and verify cloud-init does not repeat destructive/bootstrap
+   operations.
+9. Boot the Tiny Core USB and verify the controller reports `ready` only when
+   the expected version content matches.
+
+### Physical-machine test
+
+1. Reinstall the disposable supervisor through Phase 3.
+2. Follow `journalctl -u cloud-init*` and the Ansible log on first boot.
+3. Verify the automation user accepts keys and rejects password login.
+4. Verify directories, package baseline, firewall, Git revision, and markers.
+5. Run `ansible-pull` manually twice; the second run must be idempotent.
+6. Change the desired configuration version in a test branch, rerun pull, and
+   verify the exact new content.
+7. Introduce a controlled Ansible failure and verify the previous success marker
+   is not falsely advanced.
+
+### Completion evidence
+
+- First-boot cloud-init log.
+- Two consecutive Ansible recaps, with the second idempotent.
+- Marker content tied to a known commit.
+
+## Phase 5 — Build the supervisor PXE services
+
+### Goal
+
+Make the supervisor a guarded DHCP/TFTP/iPXE/HTTP server on the dedicated PXE
+network.
+
+### Code tasks
+
+- [ ] Add Ansible roles `pxe_network`, `dnsmasq`, `nginx`, `ipxe`, and
+  `pxe_assets`.
+- [ ] Implement `pxe_network`.
+  - [ ] Validate interface existence and expected permanent MAC.
+  - [ ] Assign the static PXE address using netplan.
+  - [ ] Refuse subnet overlap and default-route-interface use.
+  - [ ] Apply network changes with rollback protection.
+- [ ] Implement dnsmasq configuration.
+  - [ ] Bind only to the PXE address/interface.
+  - [ ] Configure DHCP range, gateway, DNS, lease database, and domain.
+  - [ ] Select BIOS, UEFI x86_64, and iPXE boot filenames by client class.
+  - [ ] Chain already-iPXE clients to HTTP `boot.ipxe`.
+  - [ ] Enable TFTP with a dedicated root.
+  - [ ] Validate configuration before restart.
+- [ ] Implement nginx configuration.
+  - [ ] Bind to PXE and optional management addresses explicitly.
+  - [ ] Serve read-only `/srv/autoprov/http` paths.
+  - [ ] Disable directory listing except where explicitly needed.
+  - [ ] Add `/healthz` and asset-manifest endpoints.
+  - [ ] Set correct MIME types for iPXE and installer artifacts.
+- [ ] Install/copy iPXE binaries for BIOS and UEFI.
+- [ ] Add a minimal `pxe/templates/boot.ipxe.j2` that can chain to the role-menu
+  phase but defaults to local disk for now.
+- [ ] Implement `pxe_assets`.
+  - [ ] Read a version/checksum manifest.
+  - [ ] Download into a staging directory.
+  - [ ] Verify hashes and minimum sizes.
+  - [ ] Atomically promote the complete asset set.
+  - [ ] Retain one prior version for rollback.
+- [ ] Add firewall rules only for DHCP, TFTP, DNS, and HTTP on the PXE interface.
+- [ ] Add service health checks and an Ansible assertion after deployment.
+- [ ] Add log rotation and a diagnostic command for leases and HTTP requests.
+- [ ] Add operator variable provisioning workflow for PXE network setup.
+  - [ ] Provide `ansible/host_vars/supervisor.yml.example` with all required
+    §2.3 network variables documented and annotated.
+  - [ ] Add `scripts/setup-pxe-config.sh` interactive helper that validates
+    interface existence, address format, subnet non-overlap, and writes
+    the host_vars file.
+  - [ ] Validate all §2.3 required variables are defined before enabling
+    PXE roles; fail with an actionable error listing missing variables.
+
+### Local test
+
+1. Run Ansible syntax/lint/idempotence tests.
+2. Render dnsmasq/nginx/netplan templates with valid and invalid variables.
+3. Require invalid subnet overlap and missing interface fixtures to fail.
+4. Run `dnsmasq --test` and `nginx -t` against rendered configurations.
+5. Create an isolated libvirt network with no built-in DHCP.
+6. Attach a supervisor VM with management and PXE NICs.
+7. Apply the playbook and verify services listen only on intended addresses.
+8. Start a blank PXE client VM.
+9. Verify DHCP lease, TFTP iPXE load, HTTP `boot.ipxe`, and safe local-boot
+   fallback.
+10. Test BIOS and UEFI clients.
+11. Corrupt an asset hash and verify no partial asset set is promoted.
+
+### Physical-machine test
+
+1. Connect supervisor PXE NIC and one disposable client through an isolated
+   switch with no uplink.
+2. Confirm there is no other DHCP server on the switch.
+3. Apply the PXE roles.
+4. Boot the client in BIOS and UEFI network modes.
+5. Verify lease, TFTP, iPXE chain, HTTP request, and local-disk fallback in logs.
+6. Connect a management-network client and prove it receives no DHCP response
+   from the supervisor.
+7. Stop nginx and verify health checks fail clearly without changing DHCP.
+8. Restore nginx and verify service recovery.
+
+### Completion evidence
+
+- Rendered validated service configurations.
+- Packet capture showing the isolated PXE boot sequence.
+- BIOS and UEFI physical client logs.
+
+## Phase 6 — Implement MAC-based role selection and the safe iPXE menu
+
+### Goal
+
+Select known client roles automatically, provide an interactive timeout menu,
+and guarantee unknown clients default to local boot.
+
+### Code tasks
+
+- [ ] Add `config/machines.yml` using the Phase 0 schema.
+- [ ] Add `scripts/render-machine-config.sh` or an Ansible filter/plugin.
+  - [ ] Normalize MAC formats.
+  - [ ] Reject duplicate MACs, hostnames, static IPs, and machine IDs.
+  - [ ] Generate one immutable iPXE fragment per MAC.
+  - [ ] Generate a machine index/report for operators.
+- [ ] Implement `boot.ipxe`.
+  - [ ] Read `${net0/mac}` and normalize it.
+  - [ ] Fetch the per-MAC fragment.
+  - [ ] Treat HTTP 404 as unknown machine.
+  - [ ] Never infer a destructive role from vendor or hostname.
+- [ ] Implement menu behaviour.
+  - [ ] Display machine ID, MAC, detected role, and selected target OS.
+  - [ ] Start a configurable timeout.
+  - [ ] Known MAC timeout selects its assigned role.
+  - [ ] Keypress opens manual choices allowed for that machine.
+  - [ ] Unknown MAC timeout selects local disk.
+  - [ ] Unknown MAC manual menu contains diagnostics and local boot only.
+  - [ ] Require a second confirmation before any manual install choice.
+- [ ] Add local-boot commands for BIOS, UEFI, and SAN fallback where supported.
+- [ ] Add a non-destructive diagnostics entry.
+- [ ] Log MAC, selected menu action, source (`timeout` or `manual`), and role to
+  nginx logs or a small append-only endpoint.
+- [ ] Generate menu files atomically through Ansible.
+
+### Local test
+
+1. Unit-test MAC normalization and duplicate rejection.
+2. Snapshot-test generated iPXE fragments for all roles.
+3. Use QEMU NICs with fixed known and unknown MAC addresses.
+4. Verify each known MAC reaches only its configured default role.
+5. Verify unknown MAC times out to local boot.
+6. Simulate a keypress and verify the manual menu.
+7. Request a missing/malformed fragment and verify safe local boot.
+8. Disable HTTP during menu fetch and verify safe failure.
+9. Verify menu event logs contain no secrets.
+
+### Physical-machine test
+
+1. Register one disposable client MAC with a temporary diagnostics-only role.
+2. Verify automatic selection after timeout.
+3. Verify manual menu selection after keypress.
+4. Change the client MAC in inventory to unknown and verify local boot.
+5. Disconnect HTTP after iPXE starts and verify it does not install anything.
+6. Re-enable HTTP and inspect the complete selection audit log.
+
+### Completion evidence
+
+- Generated machine index.
+- Known/unknown QEMU test logs.
+- Physical unknown-MAC safe-boot demonstration.
+
+## Phase 7 — Implement NAS installation and OMV convergence
+
+### Goal
+
+Install Debian on the registered NAS boot disk, then configure OpenMediaVault
+and storage services without ever automatically formatting data disks.
+
+### Code tasks
+
+- [ ] Pin Debian installer kernel/initrd versions and checksums.
+- [ ] Add `pxe/templates/nas.ipxe.j2`.
+- [ ] Add `pxe/templates/preseed/nas.cfg.j2`.
+  - [ ] Select only the inventory boot-disk serial.
+  - [ ] Configure locale, keyboard, hostname, mirror, time, users, SSH, and base
+    packages.
+  - [ ] Partition only the boot disk.
+  - [ ] Install bootloader on the boot disk.
+  - [ ] Add first-boot Ansible bootstrap.
+- [ ] Add NAS host variables for boot disk and separately listed data disks.
+- [ ] Add `ansible/playbooks/nas.yml` and roles:
+  `nas_base`, `omv`, `nas_disks`, `nas_shares`, `nfs`, and optional `iscsi`.
+- [ ] Implement `nas_base` and supported OMV installation with pinned source and
+  checksum/signature validation.
+- [ ] Make data-disk management opt-in per serial.
+  - [ ] Inventory disks and report unknown/new disks.
+  - [ ] Require an explicit `initialize: true` per data disk.
+  - [ ] Refuse disks containing unknown filesystems unless a separate wipe token
+    is present.
+  - [ ] Create filesystems, mount points, and stable fstab entries idempotently.
+- [ ] Create OMV shares and NFS/iSCSI exports from declarative variables.
+- [ ] Add SMART monitoring and alert hooks.
+- [ ] Install the common `ansible-pull` mechanism introduced later, initially
+  runnable manually.
+
+### Local test
+
+1. Validate preseed rendering with missing and duplicate disk serials.
+2. Boot a NAS VM with one boot disk and two data disks using fixed serials.
+3. PXE-install Debian and verify only the boot disk partition table changes.
+4. Run `nas.yml`; verify OMV and configured services.
+5. Rerun Ansible and require idempotence.
+6. Add an unknown data disk and verify Ansible reports but does not format it.
+7. Enable initialization for that serial and verify the expected filesystem and
+   mount.
+8. Write a sentinel file, rerun Ansible, and verify it remains.
+9. Test NFS from a separate client VM.
+
+### Physical-machine test
+
+1. Unplug production data disks from the disposable NAS test machine.
+2. Connect one disposable boot disk and one disposable data disk.
+3. Register exact serials and MAC.
+4. PXE boot and verify Debian installs only on the boot serial.
+5. Run NAS Ansible and verify OMV web access and SSH.
+6. Verify the data disk remains untouched until `initialize: true` is committed.
+7. Initialize it, create a share, and read/write from another machine.
+8. Reboot twice and verify mounts, NFS/iSCSI, SMART, and Ansible idempotence.
+9. Reconnect any real data disks only after changing their policy to
+   non-initializing and taking backups.
+
+### Completion evidence
+
+- Disk-table before/after records.
+- OMV/Ansible idempotence logs.
+- Client read/write verification for each configured protocol.
+
+## Phase 8 — Implement Proxmox installation and host convergence
+
+### Goal
+
+Install a registered Proxmox host automatically and configure networking,
+accounts, repositories, and NAS storage through Ansible.
+
+### Code tasks
+
+- [ ] Pin a supported Proxmox ISO and checksum.
+- [ ] Document and verify the selected Proxmox unattended-install mechanism for
+  that exact release before coding templates.
+- [ ] Add `pxe/templates/proxmox.ipxe.j2` and the required answer file/template.
+- [ ] Match installation target by inventory disk serial.
+- [ ] Configure hostname, locale, root credential delivery, management bridge,
+  and first-boot SSH key without committed secrets.
+- [ ] Add `ansible/playbooks/proxmox.yml` and roles:
+  `proxmox_base`, `proxmox_network`, `proxmox_users`, `proxmox_storage`, and
+  `proxmox_api`.
+- [ ] Configure package repositories appropriate to subscription state.
+- [ ] Configure management bridge with rollback protection.
+- [ ] Add non-root automation/API user with least-privilege role.
+- [ ] Add NFS/iSCSI storage only after reachability and identity checks.
+- [ ] Add cluster handling as an explicit later opt-in; do not form a cluster
+  automatically in the first implementation.
+- [ ] Add backup target and retention variables without creating guests yet.
+
+### Local test
+
+1. Validate answer-file rendering and secret placeholders.
+2. Boot a nested-virtualization-capable Proxmox VM where available; otherwise
+   complete installer testing in QEMU and API-role testing against a fixture VM.
+3. Verify only the selected virtual disk changes.
+4. Verify web UI, SSH, API authentication, bridge configuration, and storage.
+5. Run Ansible twice and require idempotence.
+6. Make NAS unavailable and verify the storage role fails safely without
+   damaging existing storage definitions.
+7. Test network rollback using a deliberately invalid bridge address in the
+   isolated VM.
+
+### Physical-machine test
+
+1. Use a disposable virtualization host and target disk.
+2. Verify CPU virtualization/IOMMU prerequisites before installation.
+3. Register MAC and disk serial, then PXE install.
+4. Verify management network, web UI certificate fingerprint, SSH, and API.
+5. Apply Ansible and verify users, repositories, updates, bridge, and NAS
+   storage.
+6. Reboot and verify storage reconnects and no unexpected cluster exists.
+7. Create and delete one disposable VM manually to validate the host before
+   enabling Terraform.
+
+### Completion evidence
+
+- Installer answer-file validation.
+- Physical host API and storage health report.
+- Two idempotent Ansible runs.
+
+## Phase 9 — Implement the Ubuntu edge-node installation and services
+
+### Goal
+
+Install Portatil2/edge through Ubuntu autoinstall and configure VPN, DNS,
+GitHub runner, and edge services with controlled L3 access.
+
+### Code tasks
+
+- [ ] Add `cloud-init/edge-install/` autoinstall seed files.
+- [ ] Add `pxe/templates/edge.ipxe.j2`.
+- [ ] Match the target disk by inventory serial.
+- [ ] Configure SSH-key-only access and first-boot Ansible bootstrap.
+- [ ] Add `ansible/playbooks/edge.yml` and roles:
+  `edge_base`, `edge_network`, `wireguard`, `edge_dns`, `github_runner`, and
+  `edge_services`.
+- [ ] Configure forwarding and firewall rules explicitly per allowed subnet;
+  default deny all other forwarding.
+- [ ] Generate WireGuard private keys on the node or retrieve them from an
+  approved secret store; never render them into logs.
+- [ ] Configure DNS forwarding/authoritative zones required by the lab.
+- [ ] Install a pinned GitHub Actions runner version and verify its checksum.
+- [ ] Obtain a short-lived registration token at deploy time.
+- [ ] Register the runner with explicit labels and a dedicated service account.
+- [ ] Isolate runner work using a dedicated user and, where feasible,
+  ephemeral containers/VMs.
+- [ ] Define service health checks and firewall assertions.
+
+### Local test
+
+1. PXE-install an edge VM with a fixed MAC and disk serial.
+2. Run `edge.yml` twice and require idempotence.
+3. Build three isolated subnets representing edge, internal, and untrusted.
+4. Verify allowed L3 routes work and forbidden routes fail.
+5. Establish WireGuard between fixture peers and verify key permissions.
+6. Verify DNS responses and forwarding from allowed networks only.
+7. Register a test runner against a test repository/organization and execute a
+   harmless labelled job.
+8. Remove the runner and verify cleanup/re-registration is idempotent.
+
+### Physical-machine test
+
+1. Install the disposable edge laptop through PXE.
+2. Verify disk selection, SSH keys, and first-boot Ansible.
+3. Connect each physical interface and verify intended routes and firewall
+   boundaries.
+4. Verify VPN connectivity from an external test peer.
+5. Verify internal DNS from an authorized client and rejection from an
+   unauthorized client.
+6. Run a harmless self-hosted workflow and verify workspace/user isolation.
+7. Reboot and verify VPN, DNS, runner, and edge services recover automatically.
+
+### Completion evidence
+
+- Network reachability matrix.
+- Redacted WireGuard/DNS health output.
+- Successful test runner job and subsequent cleanup.
+
+## Phase 10 — Implement continuous Ansible pull convergence
+
+### Goal
+
+Run safe periodic convergence on every managed host and make status observable.
+
+### Code tasks
+
+- [ ] Add role `ansible_pull` shared by supervisor, NAS, Proxmox, and edge.
+- [ ] Create `autoprov-pull.service`.
+  - [ ] Use a dedicated working copy and automation user.
+  - [ ] Acquire a filesystem lock.
+  - [ ] Fetch into a temporary checkout.
+  - [ ] Validate origin, revision, syntax, and optional commit signature.
+  - [ ] Select playbook from machine role.
+  - [ ] Run Ansible locally.
+  - [ ] Atomically promote successful checkout.
+  - [ ] Preserve previous successful checkout.
+  - [ ] Write structured success/failure status.
+- [ ] Create `autoprov-pull.timer` with randomized delay and configurable
+  interval.
+- [ ] Add `autoprov-pull-now.path` or a root-owned trigger command for CI to
+  request immediate convergence.
+- [ ] Prevent overlap between timer, manual, and CI-triggered runs.
+- [ ] Add network retry policy but do not hide persistent failures.
+- [ ] Add journal retention and a compact status command.
+- [ ] Add rollback command that reapplies the previous successful checkout.
+- [ ] Make `config_version` update part of successful convergence only.
+- [ ] Add optional failure notification hook with no hard-coded provider.
+
+### Local test
+
+1. Use four role fixture VMs and install the timer role.
+2. Start all timers and verify randomized non-overlapping starts.
+3. Trigger manual and timer runs concurrently; verify one obtains the lock and
+   the other exits/retries safely.
+4. Publish a valid fixture commit and verify convergence and marker update.
+5. Publish invalid YAML and verify the active checkout and marker remain at the
+   previous version.
+6. Simulate network loss and verify bounded retries and clear failed status.
+7. Run rollback and verify the prior version is restored.
+8. Reboot all VMs and verify timers remain enabled.
+
+### Physical-machine test
+
+1. Deploy the role to one host of each available machine role.
+2. Observe at least two scheduled runs.
+3. Make a harmless configuration change and verify every host converges.
+4. Introduce a controlled failing branch/revision and verify production state is
+   retained.
+5. Trigger immediate convergence remotely and verify locking.
+6. Reboot hosts and verify timer persistence and status reporting.
+
+### Completion evidence
+
+- Timer/list/lock logs from every role.
+- Successful update, rejected update, and rollback demonstrations.
+
+## Phase 11 — Implement CI validation, staging, and accelerated deployment
+
+### Goal
+
+Validate every change in isolated staging and let approved merges request rapid
+production convergence without replacing pull as the source of truth.
+
+### Code tasks
+
+- [ ] Add `.github/workflows/lint.yml` for schemas, shell, YAML, Ansible, and
+  secret scanning.
+- [ ] Add `.github/workflows/unit.yml` for Bats and pure rendering tests.
+- [ ] Add `.github/workflows/integration.yml` for QEMU/libvirt jobs on the
+  self-hosted edge runner.
+- [ ] Add scripts to create/destroy isolated staging supervisor and client VMs.
+- [ ] Cache large installer assets outside Git with checksum validation.
+- [ ] Upload redacted logs and machine-readable test reports as artifacts.
+- [ ] Add protected `staging` and `production` environments.
+- [ ] On pull requests:
+  - [ ] Run lint/unit tests.
+  - [ ] Render all machine configuration.
+  - [ ] Run affected-role integration tests.
+  - [ ] Never contact production hosts.
+- [ ] On merge to main:
+  - [ ] Run full validation.
+  - [ ] Publish/version configuration.
+  - [ ] Request normal immediate pull on staging.
+  - [ ] Require staging health before production approval.
+  - [ ] Request production pull after approval.
+- [ ] Implement `critical-change` as a protected label or approved workflow
+  input.
+  - [ ] Require authorized actor and production environment approval.
+  - [ ] Accelerate pull but never skip tests, signatures, locks, or safety.
+- [ ] Add concurrency groups so only one deployment per environment runs.
+- [ ] Add timeout, cancellation, and cleanup steps.
+- [ ] Use GitHub OIDC or scoped short-lived secrets where possible.
+- [ ] Document runner threat model and repository trust boundaries.
+
+### Local test
+
+1. Run workflow linting and execute reusable scripts manually.
+2. Use a test repository/fork and test runner labels.
+3. Open a PR containing a valid harmless change; verify lint, unit, and staging
+   integration.
+4. Open a PR with invalid shell/YAML/schema content; verify it cannot progress.
+5. Verify PR workflows cannot access production environment secrets.
+6. Merge a test change and verify staging precedes the production approval.
+7. Cancel a run and verify VMs/networks are cleaned up.
+8. Trigger two deployments and verify concurrency cancellation/serialization.
+
+### Physical-machine test
+
+1. Use non-production host inventory for the first complete workflow.
+2. Merge a harmless banner/configuration change.
+3. Verify the edge runner executes staging tests.
+4. Approve production and verify immediate pull is requested on the test host.
+5. Verify the periodic timer remains the eventual recovery path if the push
+   request is lost.
+6. Test an authorized `critical-change` and an unauthorized attempt.
+7. Audit workflow logs and verify no secret is printed.
+
+### Completion evidence
+
+- Successful and rejected PR workflow links/logs.
+- Staging-before-production proof.
+- Secret-access and concurrency test results.
+
+## Phase 12 — Add optional Terraform management for Proxmox guests
+
+### Goal
+
+Manage only Proxmox VMs, containers, networks, and guest cloud-init. Terraform
+must never manage bare-metal installation.
+
+### Code tasks
+
+- [ ] Select and pin a maintained Proxmox Terraform provider.
+- [ ] Add `terraform/modules/` for VM, container, and cloud-init snippets.
+- [ ] Add `terraform/environments/staging` and `production`.
+- [ ] Configure remote encrypted state with locking and backups.
+- [ ] Create a least-privilege Proxmox API token for Terraform.
+- [ ] Define validated variables for node, storage, bridge, IDs, templates,
+  resources, and addresses.
+- [ ] Import or reserve IDs to prevent collision with manually managed guests.
+- [ ] Add lifecycle protections for critical guests and disks.
+- [ ] Add formatting, validation, lint, and security scanning to CI.
+- [ ] Require saved plan review and production approval before apply.
+- [ ] Add explicit destroy protection and documented decommission workflow.
+
+### Local test
+
+1. Run `terraform fmt -check`, `init`, `validate`, and provider security lint.
+2. Plan against the disposable Proxmox API with read-only credentials first.
+3. Verify plan contains no bare-metal or unexpected destructive operations.
+4. Apply one small staging VM and one container.
+5. Verify cloud-init, network, storage, and SSH.
+6. Re-plan and require no changes.
+7. Change one safe resource value, apply, and verify expected-only change.
+8. Attempt protected destruction and verify it is blocked.
+
+### Physical-machine test
+
+1. Use the disposable Proxmox host from Phase 8.
+2. Create a staging VM from an approved template.
+3. Verify console, DHCP/static network, SSH, and cloud-init completion.
+4. Reapply with no drift.
+5. Test state locking with two concurrent plan/apply attempts.
+6. Destroy only the disposable staging guest through the documented approval
+   path.
+
+### Completion evidence
+
+- Reviewed plan/apply logs.
+- State-lock and destruction-protection test results.
+
+## Phase 13 — Repair and optionally integrate SystemRescue TestBench
+
+### Goal
+
+Make the hardware tester trustworthy and decide whether it remains standalone or
+becomes an optional pre-install diagnostic entry.
+
+### Code tasks
+
+- [ ] Fix persistence contract.
+  - [ ] Use one filesystem label consistently in builder and runtime.
+  - [ ] Copy config to the exact path loaded by runtime.
+  - [ ] Mount persistence before initializing logs.
+- [ ] Fix `init_logs()` to use `$(ts)`, not `$(1)`.
+- [ ] Make missing persistence fall back to `/tmp` without treating an empty
+  mount directory as mounted storage.
+- [ ] Make test functions preserve and return command exit status.
+- [ ] Produce a structured result containing pass, fail, skipped, and warning.
+- [ ] Make final summary include every test result and overall nonzero status on
+  failure.
+- [ ] Fix destructive capacity verification.
+  - [ ] Generate and save an expected pattern/hash before writing.
+  - [ ] Read it back and compare the actual hash.
+  - [ ] Restore original tail data when restoration mode is enabled and verify
+    restoration.
+  - [ ] Clearly label non-restoring mode as data-destructive.
+  - [ ] Validate random-sample bounds on small disks.
+- [ ] Redesign `fio_safe` target selection.
+  - [ ] Do not silently test the boot USB or RAM filesystem.
+  - [ ] Require an explicitly mounted test filesystem or create a documented
+    disposable target.
+  - [ ] Check free space before allocating the file.
+- [ ] Exclude the live boot device automatically.
+- [ ] Add checksums for source ISO and generated ISO.
+- [ ] Remove `eval` from ISO build option handling or validate every reconstructed
+  argument before execution.
+- [ ] Add package availability checks for stress-ng, smartctl, nvme-cli,
+  sensors, fio, and stressapptest.
+- [ ] Decide integration mode:
+  - [ ] Standalone USB/ISO, or
+  - [ ] Non-default iPXE diagnostics entry loaded only by manual selection.
+- [ ] If integrated, return to local boot after diagnostics; never chain directly
+  into destructive installation.
+
+### Local test
+
+1. Unit-test persistence-label/path handling and timestamped log paths.
+2. Unit-test result aggregation with passing, failing, missing, and skipped tools.
+3. Use small disposable image files for destructive pattern write/read/hash
+   comparison.
+4. Corrupt readback data and verify the test reports failure.
+5. Test tail restoration and compare the full image hash before and after.
+6. Build the SystemRescue ISO and verify its checksum and enabled service.
+7. Boot it in QEMU with one excluded boot disk and two test disks.
+8. Verify automatic tests never touch the excluded disk.
+9. Verify manual destructive tests require exact disk selection and `DESTROY`.
+10. Verify summary exit status matches individual test failures.
+
+### Physical-machine test
+
+1. Boot a disposable machine with the test ISO and no valuable disks.
+2. Verify persistent config and timestamped logs survive reboot.
+3. Run inventory, sensors, CPU, RAM, SMART, and safe FIO tests.
+4. Compare the displayed disk serial before accepting a destructive test.
+5. Run destructive verification on a disposable disk containing a known test
+   pattern.
+6. Verify expected hash comparison detects deliberately introduced corruption.
+7. If restoration mode is used, verify the disk image/filesystem is unchanged.
+8. If iPXE-integrated, verify only a manual diagnostics selection starts it and
+   unknown clients cannot reach destructive installation automatically.
+
+### Completion evidence
+
+- Structured pass/fail report.
+- Before/after disk hashes for restoration mode.
+- Persistent physical test logs.
+
+## Phase 14 — Recovery, observability, documentation, and release hardening
+
+### Goal
+
+Make the complete system operable without reading source code and prove that it
+recovers safely from common failures.
+
+### Code tasks
+
+- [ ] Add `docs/architecture.md` with the final boot/data/control flows.
+- [ ] Add `docs/machine-onboarding.md` and `docs/machine-retirement.md`.
+- [ ] Add runbooks for:
+  - [ ] USB will not boot.
+  - [ ] No target disk or ambiguous target.
+  - [ ] Ubuntu installer failure.
+  - [ ] cloud-init or Ansible failure.
+  - [ ] PXE DHCP/TFTP/HTTP failure.
+  - [ ] Unknown MAC.
+  - [ ] NAS storage failure.
+  - [ ] Proxmox network/storage failure.
+  - [ ] Edge VPN/DNS/runner failure.
+  - [ ] ansible-pull rollback.
+  - [ ] CI outage.
+- [ ] Add `scripts/collect-diagnostics.sh` for every role with secret redaction.
+- [ ] Add service health commands and machine-readable status endpoints/files.
+- [ ] Add monitoring hooks for failed systemd units, disk health, failed pulls,
+  expiring certificates/tokens, DHCP exhaustion, and asset checksum drift.
+- [ ] Define backup and restore procedures for Git configuration, Ansible Vault
+  or secret-store metadata, PXE assets, Proxmox state, Terraform state, and NAS
+  configuration.
+- [ ] Add release manifest containing versions and checksums for Tiny Core,
+  Ubuntu, Debian, Proxmox, iPXE, GitHub runner, and SystemRescue.
+- [ ] Add `scripts/release-check.sh` that refuses a release unless all local and
+  integration suites pass and the working tree is clean.
+- [ ] Tag the first accepted end-to-end release.
+
+### Local test
+
+1. Build everything from a clean clone using only documented commands.
+2. Run the full automated test suite.
+3. Execute every diagnostic collector and scan output for secrets.
+4. Restore test configuration and Terraform state from backups.
+5. Simulate failure of each PXE service and verify the corresponding runbook.
+6. Run the full end-to-end QEMU flow:
+   supervisor USB → Ubuntu install → first boot → PXE server → each client role
+   → periodic pull → CI-triggered pull.
+7. Run `release-check.sh` with a dirty tree and failing test and verify refusal;
+   then run it successfully on a clean passing tree.
+
+### Physical-machine test
+
+1. Perform one complete isolated-lab installation with supervisor, NAS,
+   Proxmox, and edge hardware where available.
+2. Verify unknown PXE client safety.
+3. Disconnect internet and verify already-installed machines continue operating.
+4. Rebuild the supervisor from USB and restore configuration.
+5. Restore PXE assets from the retained previous version.
+6. Roll back one Ansible release.
+7. Recover one disposable Proxmox guest from backup.
+8. Reboot every machine and verify service health and convergence.
+9. Have a second operator follow the runbooks without source-code assistance and
+   record missing instructions.
+
+### Completion evidence
+
+- End-to-end test report and network packet captures.
+- Restore/rollback reports.
+- Versioned release manifest and Git tag.
+
+## 4. Recommended implementation order
+
+Do not parallelize destructive or architecture-defining work before the shared
+contracts exist. The safe order is:
+
+1. Phase 0: tooling and schemas.
+2. Phase 1: deterministic USB.
+3. Phase 2: safe state controller.
+4. Phase 3: Ubuntu installation.
+5. Phase 4: first boot and Ansible foundation.
+6. Phase 5: PXE services.
+7. Phase 6: role selection and menus.
+8. Phase 7, Phase 8, and Phase 9: client roles. These can be developed in
+   parallel only after Phase 6 is accepted.
+9. Phase 10: continuous pull.
+10. Phase 11: CI/CD acceleration.
+11. Phase 12: optional Terraform.
+12. Phase 13: TestBench repair/integration; this may be done earlier by a
+    separate contributor because it is isolated from the provisioning path.
+13. Phase 14: final operational hardening and release.
+
+## 5. Definition of complete system
+
+The project is complete when all of the following are demonstrated:
+
+- The USB boots on supported UEFI hardware and loads persistent configuration.
+- It never selects an excluded, mounted, ambiguous, or wrong-serial disk.
+- It installs Ubuntu 24.04 on a registered supervisor using the official
+  installer.
+- First boot converges through Ansible and writes an accurate version marker.
+- The supervisor serves PXE only on the isolated provisioning network.
+- Known MACs receive their assigned role; unknown MACs boot locally.
+- NAS, Proxmox, and edge installations target only registered disk serials.
+- Every host converges periodically through a locked, rollback-capable pull.
+- CI validates changes in staging and only accelerates approved pull execution.
+- Secrets are absent from Git and logs.
+- Every destructive path has automated negative tests and a physical disposable
+  hardware test.
+- The complete environment can be rebuilt and recovered using the documented
+  runbooks.
