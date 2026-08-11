@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-die() { echo "ERROR: $*" >&2; exit 1; }
-have() { command -v "$1" >/dev/null 2>&1; }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/functions.sh
+source "$SCRIPT_DIR/lib/functions.sh"
 
 usage() {
   cat <<'EOF'
@@ -14,21 +15,38 @@ sudo ./build-tinycore-usb.sh \
   --pkg-list ./tcz/onboot.lst \
   --vm-test --vm-src /dev/sdX
 
+  ./build-tinycore-usb.sh \
+  --iso ./Core-current.iso \
+  --image /tmp/tinycore-test.img --image-size 2G \
+  --overlay ./overlay
+
 Options:
   --iso PATH
-  --dev /dev/sdX
+  --dev /dev/sdX              (whole disk only; rejected if lsblk TYPE != disk)
+  --image PATH                (build into a raw image file instead of --dev)
+  --image-size SIZE           (required with --image, e.g. 2G; passed to truncate -s)
   --overlay DIR              (ej: ./overlay; contiene opt/bootlocal.sh, opt/autorun/*)
   --tcz-dir DIR              (opcional: *.tcz, *.tcz.dep, *.md5.txt)
   --pkg-list FILE            (opcional: onboot.lst)
+  --tcz-manifest FILE        (default: ./tcz/tcz-manifest.json; verified before copying from --tcz-dir)
   --label-esp LABEL          (default: TINYBOOT)
   --label-persist LABEL      (default: TINYDATA)
   --esp-mib N                (default: 1024)
-  --no-patch-bootcodes       (no añade tce=LABEL=... a syslinux configs)
-  -y                         (no pide confirmación)
+  --no-patch-bootcodes       (skip legacy BIOS: no extlinux/gptmbr.bin install, no isolinux append patch)
+  -y                         (no interactive confirmation; still requires disk identity to be printed/logged)
 
 UEFI:
-  Si la ISO no trae EFI/BOOT/BOOTX64.EFI, el script genera uno con GRUB (grub-mkstandalone)
-  y usa search --fs-uuid con el UUID real de la ESP.
+  A project-owned GRUB UEFI loader (EFI/BOOT/BOOTX64.EFI + grub.cfg) is ALWAYS
+  generated with grub-mkstandalone, even if the source ISO ships its own
+  EFI/BOOT/BOOTX64.EFI (which is overwritten). Uses search --fs-uuid with the
+  real UUID of the ESP.
+
+Legacy BIOS (unless --no-patch-bootcodes):
+  Installs extlinux on the ESP, writes syslinux's gptmbr.bin to the disk's
+  protective MBR (first 440 bytes only; GPT partition table untouched), and
+  marks the ESP partition "legacy_boot" so BIOS firmware can chain to it.
+  Requires the `extlinux` binary (Debian/Ubuntu: apt install syslinux
+  syslinux-common extlinux) and a gptmbr.bin from syslinux-common.
 
 VM:
   --vm-test
@@ -41,6 +59,54 @@ VM:
 EOF
 }
 
+# confirm_destructive DEV
+# Requires the exact target serial as the confirmation token. Falls back to
+# requiring the device path when the device reports no SERIAL (common for
+# some virtio/loop/test devices), since a nonexistent serial cannot be
+# demanded, but the safety intent (explicit, unambiguous operator
+# confirmation) is preserved.
+confirm_destructive() {
+  local dev="$1"
+  local serial token label
+  serial="$(lsblk -ndo SERIAL "$dev" 2>/dev/null | head -n1 | xargs 2>/dev/null || true)"
+  if [[ -n "$serial" ]]; then
+    token="$serial"
+    label="disk serial"
+  else
+    token="$dev"
+    label="device path (no hardware SERIAL reported by lsblk)"
+    warn "Device reports no SERIAL; falling back to requiring the exact device path as the confirmation token."
+  fi
+
+  echo "!!! ABOUT TO ERASE: $dev !!!"
+  print_disk_info "$dev"
+
+  if [[ "$ASSUME_YES" == "1" ]]; then
+    warn "-y given: skipping interactive confirmation (would have required ${label}=${token})"
+    return 0
+  fi
+
+  local ans
+  read -r -p "Type the exact ${label} to continue [${token}]: " ans
+  [[ "$ans" == "$token" ]] || die "Confirmation token mismatch. Aborted, no changes made."
+}
+
+# create_image_and_attach PATH SIZE
+# Creates a sparse raw image file of SIZE (e.g. 2G) and attaches it via a loop
+# device with partition scanning enabled, for safe --image builds that never
+# touch a real block device. Registers the loop device in ATTACHED_LOOPDEV so
+# the EXIT trap detaches it.
+create_image_and_attach() {
+  local path="$1" size="$2"
+  [[ ! -e "$path" ]] || die "--image path already exists (refusing to overwrite): $path"
+  have truncate || die "Missing truncate (coreutils) for --image mode"
+  have losetup || die "Missing losetup (util-linux) for --image mode"
+  truncate -s "$size" "$path" || die "Failed to create image file: $path ($size)"
+  local loopdev
+  loopdev="$(losetup --find --show --partscan "$path")" || die "losetup failed for $path"
+  ATTACHED_LOOPDEV="$loopdev"
+  echo "$loopdev"
+}
 
 
 run_as_user() {
@@ -104,10 +170,13 @@ ensure_tcz_offline_with_vagrant_if_needed() {
 
 ISO=""
 DEV=""
+IMAGE_PATH=""
+IMAGE_SIZE=""
 OVERLAY_DIR="./overlay"
 BOOTSTRAP_FILES_DIR="./bootstrap"
 TCZ_DIR=""
 PKG_LIST=""
+TCZ_MANIFEST="./tcz/tcz-manifest.json"
 LABEL_ESP="TINYBOOT"
 LABEL_PERSIST="TINYDATA"
 ESP_MIB="1024"
@@ -122,13 +191,23 @@ VM_RAM="768"
 VM_NAME=""
 VM_DISK_GB="2"
 
+# Populated during build and cleaned up by the EXIT trap below.
+WORK_DIR=""
+ATTACHED_LOOPDEV=""
+ISO_MNT=""
+ESP_MNT=""
+PER_MNT=""
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --iso) ISO="$2"; shift 2;;
     --dev) DEV="$2"; shift 2;;
+    --image) IMAGE_PATH="$2"; shift 2;;
+    --image-size) IMAGE_SIZE="$2"; shift 2;;
     --overlay) OVERLAY_DIR="$2"; shift 2;;
     --tcz-dir) TCZ_DIR="$2"; shift 2;;
     --pkg-list) PKG_LIST="$2"; shift 2;;
+    --tcz-manifest) TCZ_MANIFEST="$2"; shift 2;;
     --label-esp) LABEL_ESP="$2"; shift 2;;
     --label-persist) LABEL_PERSIST="$2"; shift 2;;
     --esp-mib) ESP_MIB="$2"; shift 2;;
@@ -155,11 +234,39 @@ have mkfs.ext4 || die "Missing mkfs.ext4 (e2fsprogs)"
 have mount || die "Missing mount"
 have umount || die "Missing umount"
 have blkid || die "Missing blkid (util-linux)"
+have lsblk || die "Missing lsblk (util-linux)"
+have sha256sum || die "Missing sha256sum (coreutils)"
+have jq || die "Missing jq"
+
+# Single authoritative cleanup path: unmounts any mountpoints this run
+# created and detaches any loop device attached for --image mode, regardless
+# of whether the script exits normally, via `die`, or via a `set -e` failure.
+cleanup() {
+  local rc=$?
+  set +e
+  local m
+  for m in "$PER_MNT" "$ESP_MNT" "$ISO_MNT"; do
+    [[ -n "$m" ]] && mountpoint -q "$m" 2>/dev/null && umount "$m" >/dev/null 2>&1
+  done
+  if [[ -n "$ATTACHED_LOOPDEV" ]]; then
+    losetup -d "$ATTACHED_LOOPDEV" >/dev/null 2>&1
+  fi
+  if [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]]; then
+    rm -rf "$WORK_DIR"
+  fi
+  exit "$rc"
+}
+trap cleanup EXIT
 
 if [[ "$VM_ONLY" != "1" ]]; then
   [[ -n "$ISO" && -f "$ISO" ]] || die "Missing/invalid --iso"
-  [[ -n "$DEV" && -b "$DEV" ]] || die "Missing/invalid --dev"
-  [[ ! "$DEV" =~ [0-9]$ ]] || die "--dev must be a disk like /dev/sdX"
+  if [[ -n "$IMAGE_PATH" ]]; then
+    [[ -z "$DEV" ]] || die "--image and --dev are mutually exclusive"
+    [[ -n "$IMAGE_SIZE" ]] || die "--image requires --image-size"
+  else
+    [[ -n "$DEV" ]] || die "Missing/invalid --dev (or use --image PATH --image-size SIZE)"
+    require_whole_disk "$DEV"
+  fi
   [[ -d "$OVERLAY_DIR" ]] || die "Invalid --overlay dir: $OVERLAY_DIR"
 fi
 if [[ -n "$TCZ_DIR" ]]; then [[ -d "$TCZ_DIR" ]] || die "Invalid --tcz-dir: $TCZ_DIR"; fi
@@ -179,70 +286,68 @@ unmount_dev_tree() {
   done
 }
 
-# Detect TinyCore kernel/initrd inside ESP
-detect_tc_boot_files() {
-  local esp_root="$1"
-  local k=""
-  local i=""
-
-  # Common
-  [[ -f "$esp_root/boot/vmlinuz64" ]] && k="/boot/vmlinuz64"
-  [[ -z "$k" && -f "$esp_root/boot/vmlinuz" ]] && k="/boot/vmlinuz"
-
-  if [[ -z "$k" ]]; then
-    local found
-    found="$(find "$esp_root/boot" -maxdepth 1 -type f -name 'vmlinuz*' 2>/dev/null | head -n1 || true)"
-    [[ -n "$found" ]] && k="/boot/$(basename "$found")"
-  fi
-
-  for cand in corepure64.gz coreplus.gz core.gz tinycore.gz; do
-    if [[ -f "$esp_root/boot/$cand" ]]; then
-      i="/boot/$cand"
-      break
-    fi
-  done
-  if [[ -z "$i" ]]; then
-    local foundi
-    foundi="$(find "$esp_root/boot" -maxdepth 1 -type f -name '*.gz' 2>/dev/null | head -n1 || true)"
-    [[ -n "$foundi" ]] && i="/boot/$(basename "$foundi")"
-  fi
-
-  [[ -n "$k" && -n "$i" ]] || return 1
-  echo "$k|$i"
-}
-
-# Generate BOOTX64.EFI and grub.cfg. Uses ESP UUID for search.
+# Generate BOOTX64.EFI and grub.cfg. Uses ESP UUID for search. ALWAYS called
+# (even when the source ISO already ships its own EFI/BOOT/BOOTX64.EFI, which
+# gets overwritten) so the resulting loader is always project-owned and
+# always references this specific build's persistence UUIDs.
 generate_grub_uefi_loader() {
   local esp_root="$1"
-  local esp_uuid="$2"     # UUID of /dev/sdX1 (vfat)
-  local data_uuid="$3"     # UUID of /dev/sdX2 (PERSIST)
+  local esp_uuid="$2"     # UUID of ESP partition (vfat)
+  local data_uuid="$3"     # UUID of PERSIST partition
 
   have grub-mkstandalone || die "grub-mkstandalone not found. Install: sudo apt install grub-efi-amd64-bin"
+
+  if [[ -f "$esp_root/EFI/BOOT/BOOTX64.EFI" ]]; then
+    log "ISO shipped its own EFI/BOOT/BOOTX64.EFI; overwriting with a project-owned GRUB loader."
+  fi
 
   local bi
   bi="$(detect_tc_boot_files "$esp_root" || true)"
   [[ -n "$bi" ]] || die "Cannot detect TinyCore boot files under /boot (need vmlinuz* and *.gz)"
   local KERNEL="${bi%%|*}"
   local INITRD="${bi##*|}"
+  local PERSIST_ARGS="waitusb=20:UUID=${data_uuid} tc-config tce=UUID=${data_uuid} backup=UUID=${data_uuid}"
 
   mkdir -p "$esp_root/EFI/BOOT"
 
   # IMPORTANT: put search inside menuentry so root is correct when loading kernel/initrd
   cat > "$esp_root/EFI/BOOT/grub.cfg" <<EOF
-set timeout=3
+set timeout=5
 set default=0
 
-menuentry "TinyCore (UEFI) + autoprov" {
+menuentry "TinyCore supervisor (UEFI)" {
   insmod part_gpt
   insmod fat
   search --no-floppy --fs-uuid --set=root ${esp_uuid}
   echo "Loading TinyCore..."
-  linux  ${KERNEL} quiet waitusb=20:UUID=$data_uuid tc-config tce=UUID=$data_uuid backup=UUID=$data_uuid loglevel=7
+  linux  ${KERNEL} quiet ${PERSIST_ARGS} loglevel=7
   initrd ${INITRD}
 }
+
+menuentry "TinyCore supervisor (UEFI) - diagnostic / verbose" {
+  insmod part_gpt
+  insmod fat
+  search --no-floppy --fs-uuid --set=root ${esp_uuid}
+  echo "Loading TinyCore (diagnostic)..."
+  linux  ${KERNEL} ${PERSIST_ARGS} loglevel=8 debug
+  initrd ${INITRD}
+}
+
+# Reserved for Phase 3 ("Installation mechanism"): an Ubuntu autoinstall
+# kexec entry, once the Ubuntu Server casper/vmlinuz + casper/initrd are
+# staged on this ESP and a NoCloud seed is available. Uncomment and complete
+# in Phase 3; do not enable a half-finished entry here.
+#
+# menuentry "Ubuntu autoinstall (kexec)" {
+#   insmod part_gpt
+#   insmod fat
+#   search --no-floppy --fs-uuid --set=root ${esp_uuid}
+#   linux  /ubuntu/casper/vmlinuz autoinstall ds=nocloud;s=/ubuntu/nocloud/ ---
+#   initrd /ubuntu/casper/initrd
+# }
 EOF
 
-  echo "[+] Generating EFI/BOOT/BOOTX64.EFI with grub-mkstandalone..."
+  log "Generating EFI/BOOT/BOOTX64.EFI with grub-mkstandalone (project-owned, always regenerated)..."
   grub-mkstandalone \
     -O x86_64-efi \
     -o "$esp_root/EFI/BOOT/BOOTX64.EFI" \
@@ -251,22 +356,42 @@ EOF
   [[ -f "$esp_root/EFI/BOOT/BOOTX64.EFI" ]] || die "Failed to generate BOOTX64.EFI"
 }
 
-check_or_make_uefi() {
-  local esp_root="$1"
-  local esp_uuid="$2"
-  local data_uuid="$3"     # UUID of /dev/sdX2 (PERSIST)
+# install_legacy_bios_boot DEV ESP_PARTNUM ESP_MNT DATA_UUID
+# Makes the disk bootable on legacy BIOS firmware from a GPT layout:
+#   1. extlinux --install on the mounted (FAT32) ESP: writes ldlinux.sys and
+#      patches that partition's VBR.
+#   2. Writes gptmbr.bin to the disk's protective MBR (first 440 bytes only;
+#      the GPT/PMBR partition table entries at/after offset 446 are never
+#      touched).
+#   3. Flags the ESP partition "legacy_boot" so gptmbr.bin's handover
+#      protocol finds it.
+# Requires extlinux (Debian/Ubuntu: apt install syslinux syslinux-common
+# extlinux). Use --no-patch-bootcodes to build a UEFI-only USB instead.
+# partition_path, find_gptmbr_bin, generate_extlinux_conf, and
+# patch_bootconfigs_add_karg are all sourced from lib/functions.sh.
+install_legacy_bios_boot() {
+  local dev="$1" esp_partnum="$2" esp_mnt="$3" data_uuid="$4"
 
-  if [[ -f "$esp_root/EFI/BOOT/BOOTX64.EFI" ]]; then
-    echo "[+] UEFI loader already present: EFI/BOOT/BOOTX64.EFI"
-    return 0
-  fi
-  echo "[!] No EFI loader in ISO copy. Will generate BOOTX64.EFI via GRUB..."
-  generate_grub_uefi_loader "$esp_root" "$esp_uuid" "$data_uuid"
+  have extlinux || die "Missing extlinux (Debian/Ubuntu: apt install syslinux syslinux-common extlinux) required for legacy BIOS support. Pass --no-patch-bootcodes to build a UEFI-only USB."
+  local gptmbr
+  gptmbr="$(find_gptmbr_bin)" || die "Cannot find gptmbr.bin (checked: ${GPTMBR_CANDIDATES[*]}). Install syslinux-common, or pass --no-patch-bootcodes."
+
+  generate_extlinux_conf "$esp_mnt" "$data_uuid"
+
+  log "Installing extlinux bootloader on ESP (legacy BIOS)..."
+  extlinux --install "$esp_mnt" || die "extlinux --install failed on $esp_mnt"
+
+  log "Writing GPT protective-MBR boot code ($gptmbr) to $dev (first 440 bytes only; partition table preserved)..."
+  dd if="$gptmbr" of="$dev" bs=440 count=1 conv=notrunc status=none || die "Failed writing gptmbr.bin to $dev"
+
+  log "Marking partition $esp_partnum of $dev as legacy_boot..."
+  parted -s "$dev" set "$esp_partnum" legacy_boot on || die "Failed to set legacy_boot flag on ${dev} partition ${esp_partnum}"
 }
 
 check_uefi_on_block_device() {
   local dev="$1"
-  local p1="${dev}1"
+  local p1
+  p1="$(partition_path "$dev" 1)"
   [[ -b "$p1" ]] || die "UEFI check: missing ${p1}"
   local tmp
   tmp="$(mktemp -d)"
@@ -281,7 +406,8 @@ check_uefi_on_image_file() {
   have losetup || die "losetup required to validate UEFI on image"
   local loopdev
   loopdev="$(losetup --find --show --partscan "$img")"
-  local p1="${loopdev}p1"
+  local p1
+  p1="$(partition_path "$loopdev" 1)"
   local tmp
   tmp="$(mktemp -d)"
   mount "$p1" "$tmp" || { losetup -d "$loopdev" || true; die "UEFI check: cannot mount ${p1}"; }
@@ -295,12 +421,7 @@ build_usb() {
   local iso="$1"
   local dev="$2"
 
-  echo "[!] ABOUT TO ERASE: $dev"
-  lsblk -o NAME,SIZE,MODEL,TRAN "$dev" || true
-  if [[ "$ASSUME_YES" != "1" ]]; then
-    read -r -p "Type YES to continue: " ans
-    [[ "$ans" == "YES" ]] || die "Aborted."
-  fi
+  confirm_destructive "$dev"
 
   unmount_dev_tree "$dev"
   wipefs -a "$dev"
@@ -313,98 +434,138 @@ build_usb() {
   partprobe "$dev" || true
   sleep 1
 
-  local esp="${dev}1"
-  local persist="${dev}2"
+  local esp persist
+  esp="$(partition_path "$dev" 1)"
+  persist="$(partition_path "$dev" 2)"
   [[ -b "$esp" ]] || die "ESP not found: $esp"
   [[ -b "$persist" ]] || die "Persist not found: $persist"
 
   mkfs.vfat -F32 -n "$LABEL_ESP" "$esp"
   mkfs.ext4 -F -L "$LABEL_PERSIST" "$persist" >/dev/null
 
-  # Get ESP UUID now that it's formatted
-  local esp_uuid
+  # Get UUIDs now that both partitions are formatted.
+  local esp_uuid data_uuid
   esp_uuid="$(blkid -s UUID -o value "$esp" || true)"
   [[ -n "$esp_uuid" ]] || die "Cannot read UUID from ESP ($esp)"
-  local data_uuid
-  data_uuid="$(blkid -s UUID -o value "$persist")"
-  [[ -n "$esp_uuid" ]] || die "Cannot read UUID from ESP ($esp)"
+  data_uuid="$(blkid -s UUID -o value "$persist" || true)"
+  [[ -n "$data_uuid" ]] || die "Cannot read UUID from PERSIST ($persist)"
 
-  local work
-  work="$(mktemp -d)"
-  local iso_mnt="$work/iso"
-  local esp_mnt="$work/esp"
-  local per_mnt="$work/persist"
-  mkdir -p "$iso_mnt" "$esp_mnt" "$per_mnt"
-  trap 'set +e; umount "$iso_mnt" >/dev/null 2>&1 || true; umount "$esp_mnt" >/dev/null 2>&1 || true; umount "$per_mnt" >/dev/null 2>&1 || true; rm -rf "$work"' RETURN
+  # WORK_DIR/ISO_MNT/ESP_MNT/PER_MNT are globals: the single EXIT trap
+  # (cleanup(), registered at top-level) unmounts/removes them no matter how
+  # this function returns, so there is no local RETURN trap here anymore.
+  WORK_DIR="$(mktemp -d)"
+  ISO_MNT="$WORK_DIR/iso"
+  ESP_MNT="$WORK_DIR/esp"
+  PER_MNT="$WORK_DIR/persist"
+  mkdir -p "$ISO_MNT" "$ESP_MNT" "$PER_MNT"
 
-  mount -o loop,ro "$iso" "$iso_mnt"
-  mount "$esp" "$esp_mnt"
-  mount "$persist" "$per_mnt"
+  mount -o loop,ro "$iso" "$ISO_MNT"
+  mount "$esp" "$ESP_MNT"
+  mount "$persist" "$PER_MNT"
 
-  # Copy ISO to ESP
+  # Copy ISO content to ESP.
   if have rsync; then
-    rsync -aHAX --delete "$iso_mnt"/ "$esp_mnt"/
+    rsync -aHAX --delete "$ISO_MNT"/ "$ESP_MNT"/
   else
-    rm -rf "$esp_mnt"/*
-    cp -a "$iso_mnt"/. "$esp_mnt"/
+    rm -rf "${ESP_MNT:?}"/*
+    cp -a "$ISO_MNT"/. "$ESP_MNT"/
   fi
 
-  # Ensure UEFI loader exists (either from ISO or generated). Uses detected ESP UUID.
-  check_or_make_uefi "$esp_mnt" "$esp_uuid" "$data_uuid"
+  # ALWAYS generate a project-owned UEFI loader; never trust an unmodified
+  # loader shipped by the source ISO (overwritten if present).
+  generate_grub_uefi_loader "$ESP_MNT" "$esp_uuid" "$data_uuid"
 
-  # Prepare persistent /tce
-  mkdir -p "$per_mnt/tce/optional" "$per_mnt/tce/logs" "$per_mnt/tce/autoprov"
-  cat > "$per_mnt/tce/README.txt" <<EOF
+  # Legacy BIOS boot: extlinux + gptmbr.bin + legacy_boot flag, unless the
+  # operator explicitly opted out with --no-patch-bootcodes.
+  if [[ "$PATCH_BOOTCODES" == "1" ]]; then
+    install_legacy_bios_boot "$dev" 1 "$ESP_MNT" "$data_uuid"
+    # Idempotently ensure the ISO's own isolinux configs (copied above,
+    # otherwise inert now that extlinux.conf/grub.cfg own the boot chain)
+    # also carry the persistence kernel args, in case any firmware/tooling
+    # falls back to booting via isolinux.bin directly from the ESP.
+    patch_bootconfigs_add_karg "$ESP_MNT" "tce=UUID=${data_uuid}"
+    patch_bootconfigs_add_karg "$ESP_MNT" "backup=UUID=${data_uuid}"
+  else
+    warn "--no-patch-bootcodes: building a UEFI-only USB (no legacy BIOS boot path)"
+  fi
+
+  # Prepare persistent /tce.
+  mkdir -p "$PER_MNT/tce/optional" "$PER_MNT/tce/logs" "$PER_MNT/tce/autoprov"
+  cat > "$PER_MNT/tce/README.txt" <<EOF
 TinyCore persistent storage:
 - Extensions:  /tce/optional
 - Onboot:      /tce/onboot.lst
 - Backup:      /tce/mydata.tgz (restores overlay at boot)
 - Logs:        /tce/logs
+- Fallback:    /tce/bootstrap.fallback.sh (bundled controller, used only if
+               the remote download fails after all retries)
 EOF
 
-  # Copy tcz offline
+  # Copy tcz offline, verifying pinned checksums first (see
+  # tcz/tcz-manifest.json and tcz/generate-tcz-manifest.sh).
   if [[ -n "$TCZ_DIR" ]]; then
+    verify_tcz_checksums "$TCZ_DIR" "$TCZ_MANIFEST"
     shopt -s nullglob
-    cp -a "$TCZ_DIR"/*.tcz "$per_mnt/tce/optional/" 2>/dev/null || true
-    cp -a "$TCZ_DIR"/*.tcz.dep "$per_mnt/tce/optional/" 2>/dev/null || true
-    cp -a "$TCZ_DIR"/*.tcz.md5.txt "$per_mnt/tce/optional/" 2>/dev/null || true
+    cp -a "$TCZ_DIR"/*.tcz "$PER_MNT/tce/optional/" 2>/dev/null || true
+    cp -a "$TCZ_DIR"/*.tcz.dep "$PER_MNT/tce/optional/" 2>/dev/null || true
+    cp -a "$TCZ_DIR"/*.tcz.md5.txt "$PER_MNT/tce/optional/" 2>/dev/null || true
     shopt -u nullglob
   fi
 
-  # Install onboot.lst
+  # Install onboot.lst (tcz/onboot.lst is the single canonical source list;
+  # see tcz/README.md for the full caching pipeline).
   if [[ -n "$PKG_LIST" ]]; then
     awk '{
       gsub(/\r/,"");
       if ($0 ~ /^[[:space:]]*$/) next;
       if ($0 ~ /^[[:space:]]*#/) next;
       print $0
-    }' "$PKG_LIST" > "$per_mnt/tce/onboot.lst"
+    }' "$PKG_LIST" > "$PER_MNT/tce/onboot.lst"
   fi
 
-  # Pack overlay -> mydata.tgz (restored on boot)
-  tar -C "$OVERLAY_DIR" -czf "$per_mnt/tce/mydata.tgz" --numeric-owner .
+  # Stage the overlay in a scratch directory so bootstrap.fallback.sh (the
+  # latest accepted controller) can be injected at build time without
+  # permanently committing a duplicate copy of it inside overlay/ itself.
+  local staged_overlay="$WORK_DIR/overlay-staged"
+  cp -a "$OVERLAY_DIR" "$staged_overlay"
+  mkdir -p "$staged_overlay/opt/autorun"
+  local fallback_src="$SCRIPT_DIR/../check-so/autoinstall-ubuntu.sh"
+  [[ -f "$fallback_src" ]] || die "Cannot bundle bootstrap.fallback.sh: missing $fallback_src"
+  cp -a "$fallback_src" "$staged_overlay/opt/autorun/bootstrap.fallback.sh"
+  chmod +x "$staged_overlay/opt/autorun/bootstrap.fallback.sh"
+  local fallback_sha256
+  fallback_sha256="$(sha256sum "$staged_overlay/opt/autorun/bootstrap.fallback.sh" | awk '{print $1}')"
 
-  # For legacy/syslinux paths (optional)
-#   if [[ "$PATCH_BOOTCODES" == "1" ]]; then
-#     patch_bootconfigs_add_karg "$esp_mnt" "tce=LABEL=${LABEL_PERSIST}"
-#     patch_bootconfigs_add_karg "$esp_mnt" "backup=LABEL=${LABEL_PERSIST}"
-#   fi
+  # Pack staged overlay -> mydata.tgz (restored on boot by bootlocal.sh).
+  tar -C "$staged_overlay" -czf "$PER_MNT/tce/mydata.tgz" --numeric-owner .
+  # Also drop the fallback script directly onto persist so the post-build
+  # validator (and operators inspecting the USB) can see it without
+  # unpacking the tgz.
+  cp -a "$staged_overlay/opt/autorun/bootstrap.fallback.sh" "$PER_MNT/tce/bootstrap.fallback.sh"
 
-  # copy autorun env file
-  cp -a "$OVERLAY_DIR/opt/autorun/autoprov.env" "$per_mnt/tce" 2>/dev/null || true
-  # copy files needed by bootstrap scripts
-  cp -a "$BOOTSTRAP_FILES_DIR/." "$per_mnt/tce" 2>/dev/null || true
+  # Copy autorun env file.
+  cp -a "$OVERLAY_DIR/opt/autorun/autoprov.env" "$PER_MNT/tce" 2>/dev/null || true
+  # Copy files needed by bootstrap scripts (installer.env, etc.).
+  cp -a "$BOOTSTRAP_FILES_DIR/." "$PER_MNT/tce" 2>/dev/null || true
 
   sync
-  umount "$per_mnt" || true
-  umount "$esp_mnt" || true
-  umount "$iso_mnt" || true
-  trap - RETURN
-  rm -rf "$work"
 
-  echo "[+] Done. UEFI loader present and persistence ready."
-  echo "    ESP UUID:  $esp_uuid (used in grub search)"
-  echo "    Logs in:   LABEL=$LABEL_PERSIST -> tce/logs/"
+  log "Validating build tree before declaring success..."
+  validate_build_tree "$ESP_MNT" "$PER_MNT" "$esp_uuid" "$data_uuid" "$PATCH_BOOTCODES" \
+    || die "Post-build validation failed (see [validate] messages above). The USB was written but is NOT trustworthy; do not deploy it."
+
+  local manifest_out="${BUILD_MANIFEST_OUT:-$(pwd)/build-manifest.json}"
+  emit_build_manifest "$manifest_out" "$ESP_MNT" "$PER_MNT" "$esp_uuid" "$data_uuid"
+  local manifest_tmp="$manifest_out.tmp.$$"
+  jq --arg h "$fallback_sha256" '. + {bootstrap_fallback_sha256: $h}' "$manifest_out" > "$manifest_tmp" \
+    && mv "$manifest_tmp" "$manifest_out"
+  log "Wrote build manifest: $manifest_out"
+
+  log "Done. UEFI + legacy BIOS loaders present and persistence ready."
+  log "  ESP UUID:    $esp_uuid (used in grub search / extlinux persistence args)"
+  log "  Data UUID:   $data_uuid"
+  log "  Logs in:     LABEL=$LABEL_PERSIST -> tce/logs/"
+  log "  Manifest:    $manifest_out"
 }
 
 vm_test() {
@@ -467,7 +628,13 @@ vm_test() {
 
 
 if [[ "$VM_ONLY" != "1" ]]; then
-  build_usb "$ISO" "$DEV"
+  TARGET_DEV="$DEV"
+  if [[ -n "$IMAGE_PATH" ]]; then
+    log "Creating raw image $IMAGE_PATH ($IMAGE_SIZE) and attaching via loop device..."
+    TARGET_DEV="$(create_image_and_attach "$IMAGE_PATH" "$IMAGE_SIZE")"
+    log "Attached as $TARGET_DEV (detached automatically on exit; populated image file remains at $IMAGE_PATH)"
+  fi
+  build_usb "$ISO" "$TARGET_DEV"
 fi
 
 if [[ "$VM_TEST" == "1" || "$VM_ONLY" == "1" ]]; then

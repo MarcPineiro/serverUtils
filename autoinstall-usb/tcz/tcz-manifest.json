@@ -1,0 +1,107 @@
+{
+  "generated": "2026-08-11T05:49:02+02:00",
+  "tc_version": "16.x",
+  "arch": "x86_64",
+  "extensions": {
+    "bash-completion.tcz": {
+      "sha256": "cf12aac4fbcda1ec049a4848f74762c739419c0a916d786fd2cb42746c2f1512",
+      "md5": "ec026dd813121fdcf105e7c2439d54a4"
+    },
+    "bash.tcz": {
+      "sha256": "1e75672f626df1217e097b25e31c6fcb0ed13bdceebc21e340f1969bb0285afb",
+      "md5": "dd844f3f992a961f39a919a84d235bb2"
+    },
+    "busybox_extras.tcz": {
+      "sha256": "0fa208084b3313b1d888342bc75acfb233a2f8f23cc095a21531ad16fa3e4033",
+      "md5": "35c99bb7d25413568be9d7456e44805c"
+    },
+    "bzip2-lib.tcz": {
+      "sha256": "bef8ac6dd3bd2c43e828b0ad5f3e29003999cfe79dffe3c7ddc3d76c4d90898a",
+      "md5": "877832668649689704e352ee09584643"
+    },
+    "ca-certificates.tcz": {
+      "sha256": "e8c9fa5273eb3ded61a64c3a300e5292369fbc1a60c42134ca4a49edd9443bcc",
+      "md5": "8e639366cad53d98f042abf4c81729b5"
+    },
+    "curl.tcz": {
+      "sha256": "fe708b0808e62e40fdc70b85df2bffe71a779e366be53e72ac1922d124359ebc",
+      "md5": "e98dc08ae165e07f5dc071acd5605123"
+    },
+    "db.tcz": {
+      "sha256": "30ca0b2ceab6c5a516f2773b4f89fab0565b9f1de842700c9e3567ab189dec0d",
+      "md5": "6934cba98a2d26c5a06084ea28d5503d"
+    },
+    "dosfstools.tcz": {
+      "sha256": "eaa65306bced2758d90084a644291a2cbec3861d55a0c719b35e06fc8e71ffac",
+      "md5": "d8fdef4b24a2f26a47de9ff08026562e"
+    },
+    "e2fsprogs.tcz": {
+      "sha256": "430b311cf47c8eb530c82f0c3d79f1d0a0139b9618cfa8bb87298fac50511cc5",
+      "md5": "39735db305767f5e2b45f5b3b7ee6b95"
+    },
+    "efibootmgr.tcz": {
+      "sha256": "f8844b7d2728ee02a47e0a1795d61bfe4703c13509a030dcbcb009c50c4d0fe3",
+      "md5": "30a798869cf1ba418a0a0345dff45083"
+    },
+    "efivar.tcz": {
+      "sha256": "f4edc928c21199afb4cc3d1c6e7c2a5f2cf50d708bec21e4a79b3a5f378d6e4f",
+      "md5": "c26de3d03b5496c8a74e5b40e88c4466"
+    },
+    "file.tcz": {
+      "sha256": "93091f35e731e18d33618c00c4ef38f77ac2f9e0b1d7c676b3834ba77ef4a398",
+      "md5": "750b37f5c08b50583e16f47e5f46f946"
+    },
+    "iproute2.tcz": {
+      "sha256": "f017628d96a5c1540f588f2bc1faa59bd5c7906c61ac7181986fb5ada2a9ae8e",
+      "md5": "cb242309d7b4948aa79119b4b9269ec5"
+    },
+    "libdb.tcz": {
+      "sha256": "01147317677471493c080b2ad48f2ea13676454c5d245f1e3222f43bcf7ef22a",
+      "md5": "d7306fed2f2e11280e85e5effe0e02a4"
+    },
+    "liblvm2.tcz": {
+      "sha256": "4df728b069c986256f4c6e8c64ba1933822ffb9ddac0b2659472f4f34a829ed1",
+      "md5": "2cb278ef278a6b8819df52ec2e6bedc3"
+    },
+    "liblzma.tcz": {
+      "sha256": "b550c00b318a89885f2a9d4f7d6a15b8d0834e50aab9094d50d417dba66828e7",
+      "md5": "4c257b78efa66de7a0f9167b389ba394"
+    },
+    "libzstd.tcz": {
+      "sha256": "b784fb89fcea06abd605e9e14b226dc68ea0cb98bd420ab4d098a1286e85340b",
+      "md5": "2ee731d7bc669e673852385a345d4ec1"
+    },
+    "nano.tcz": {
+      "sha256": "1f36abdb558054b6b059a2d293e6d937f260db95cc0eafcca5f9b27a953f30b3",
+      "md5": "575b64f91aca85a224e1f7ddb09f3d7c"
+    },
+    "ncursesw.tcz": {
+      "sha256": "43dca6595614b94bbc3088df908b74c97392256ddc68558aa8f8003c2f20721c",
+      "md5": "520358df1bb1c76b1f44e441a987301e"
+    },
+    "openssl.tcz": {
+      "sha256": "70ce90d4dfb921e95227f549048fa96dc5a152678cf8982c477b482d956e26d3",
+      "md5": "68c98ba28b830a09e75478ad1854ba6e"
+    },
+    "parted.tcz": {
+      "sha256": "2bf8b7ac21866470a3a6c20f82086cf15de8b9dc2b6f449e616b6961b581e3ea",
+      "md5": "2b3cdf27b5c6aa5841500373fd6ff3c8"
+    },
+    "popt.tcz": {
+      "sha256": "dd1aacf6558098dc68bfa59f1588a22406547e67e8cb866364d49fa8c7bccdcf",
+      "md5": "e4b5b51ccffe780f988bff6b3efdf8db"
+    },
+    "readline.tcz": {
+      "sha256": "e3ce6fd16a7bbfe29034455883f954aab2424223a1ed2b89b409013002343590",
+      "md5": "48f89b23c7df25686485e0ad74119d06"
+    },
+    "udev-lib.tcz": {
+      "sha256": "6b357512151a3dae7f71623d1efcd228f0460595bcbd88dbf914c18f112b7087",
+      "md5": "dff3775dea468c31e517f5ec5f403ce0"
+    },
+    "util-linux.tcz": {
+      "sha256": "615b3c3ecf55153085198d9312b968cb2e810af0ab1f6675170e0b950f89e9a4",
+      "md5": "a3586fc382fffdb64fd076ee1d718419"
+    }
+  }
+}
