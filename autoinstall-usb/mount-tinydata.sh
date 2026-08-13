@@ -30,5 +30,10 @@ fi
 echo "[+] Montando $DEV en $MNT ..."
 mount "$DEV" "$MNT"
 
-echo "[+] OK. Logs en: /etc/sysconfig/tcedir/logs/"
-ls -la "/etc/sysconfig/tcedir/logs" 2>/dev/null || true
+# Logs on the workstation live under the mounted TINYDATA partition itself
+# (tce/logs/), never under the build host's own /etc/sysconfig/tcedir --
+# that path only resolves inside a booted Tiny Core system (agent-plan
+# Phase 1: "Correct mount-tinydata.sh so it lists logs from the mountpoint
+# it actually mounted").
+echo "[+] OK. Logs en: $MNT/tce/logs/"
+ls -la "$MNT/tce/logs" 2>/dev/null || true

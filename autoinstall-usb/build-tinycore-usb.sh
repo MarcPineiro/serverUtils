@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-die() { echo "ERROR: $*" >&2; exit 1; }
-have() { command -v "$1" >/dev/null 2>&1; }
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/functions.sh
+source "$SCRIPT_ROOT/lib/functions.sh"
+# shellcheck source=lib/grub.sh
+source "$SCRIPT_ROOT/lib/grub.sh"
+# shellcheck source=lib/syslinux.sh
+source "$SCRIPT_ROOT/lib/syslinux.sh"
+
+# A single EXIT trap (registered once, at top level) guarantees every mount
+# and loop device this script creates is released even when `die`/`set -e`
+# short-circuits control flow (agent-plan Phase 1: "Add an EXIT cleanup trap
+# for mounts and loop devices").
+trap cleanup_on_exit EXIT
 
 usage() {
   cat <<'EOF'
@@ -14,21 +25,32 @@ sudo ./build-tinycore-usb.sh \
   --pkg-list ./tcz/onboot.lst \
   --vm-test --vm-src /dev/sdX
 
+sudo ./build-tinycore-usb.sh --iso ./Core-current.iso --image /tmp/usb.img --image-size 2G
+
 Options:
   --iso PATH
-  --dev /dev/sdX
+  --dev /dev/sdX              Whole-disk target (mutually exclusive with --image).
+  --image PATH                 Build into a raw image file instead of a real disk
+                                (loop-attached; safe for CI/local testing).
+  --image-size SIZE            Required the first time --image PATH does not exist
+                                yet (qemu-img size syntax, e.g. 2G).
   --overlay DIR              (ej: ./overlay; contiene opt/bootlocal.sh, opt/autorun/*)
-  --tcz-dir DIR              (opcional: *.tcz, *.tcz.dep, *.md5.txt)
+  --tcz-dir DIR              (opcional: *.tcz, *.tcz.dep, *.md5.txt [+ manifest.json])
   --pkg-list FILE            (opcional: onboot.lst)
+  --controller-src PATH        Controller bundled onto TINYDATA as the local
+                                fallback (default: ../check-so/autoinstall-ubuntu.sh).
+  --no-bundle-fallback          Skip bundling the fallback controller (testing only).
   --label-esp LABEL          (default: TINYBOOT)
   --label-persist LABEL      (default: TINYDATA)
   --esp-mib N                (default: 1024)
-  --no-patch-bootcodes       (no añade tce=LABEL=... a syslinux configs)
-  -y                         (no pide confirmación)
+  --no-patch-bootcodes       (no añade tce=/backup=/waitusb= a syslinux configs)
+  -y                         (no pide confirmación interactiva; el token sigue
+                              impreso para que quede constancia en el log)
 
 UEFI:
-  Si la ISO no trae EFI/BOOT/BOOTX64.EFI, el script genera uno con GRUB (grub-mkstandalone)
-  y usa search --fs-uuid con el UUID real de la ESP.
+  EFI/BOOT/grub.cfg y BOOTX64.EFI se regeneran SIEMPRE con GRUB
+  (grub-mkstandalone) usando el UUID real de la ESP; nunca se confía en el
+  loader de la ISO de origen.
 
 VM:
   --vm-test
@@ -40,8 +62,6 @@ VM:
   --vm-disk-gb N             (default: 2)
 EOF
 }
-
-
 
 run_as_user() {
   # Ejecuta comandos como el usuario que invocó sudo (si aplica).
@@ -61,12 +81,9 @@ ensure_tcz_offline_with_vagrant_if_needed() {
 
   [[ -n "${PKG_LIST:-}" ]] || return 0  # nada que hacer si no hay pkg-list
 
-  local root
-  root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
+  local root="$SCRIPT_ROOT"
   local fetch_script="$root/tcz/fetch-tcz.sh"
   local cache_root="$root/tcz-cache"
-  local cache_onboot="$cache_root/onboot.lst"
   local cache_optional="$cache_root/tce/optional"
 
   # ¿Ya hay .tcz disponibles? entonces no hacemos nada.
@@ -80,21 +97,19 @@ ensure_tcz_offline_with_vagrant_if_needed() {
     fi
   fi
 
-  # Si TCZ_DIR está vacío o no contiene .tcz, descargamos con Vagrant
+  # Si TCZ_DIR está vacío o no contiene .tcz, descargamos con fetch-tcz.sh
+  # (tcz/onboot.lst es la única lista canónica; nunca se genera aquí).
   if [[ "$need_fetch" == "1" ]]; then
-    [[ -f "$fetch_script" ]] || die "No existe $fetch_script (necesario para descargar TCZ con Vagrant)"
+    [[ -f "$fetch_script" ]] || die "No existe $fetch_script (necesario para descargar TCZ)"
     [[ -f "$PKG_LIST" ]] || die "Invalid --pkg-list: $PKG_LIST"
 
-    mkdir -p "$cache_optional"
-    cp -f "$PKG_LIST" "$cache_onboot"
-
-    echo "[+] No hay .tcz offline en --tcz-dir. Descargando con Vagrant/TinyCore (tce-load)..."
-    run_as_user "cd '$root' && '$fetch_script'" --onboot $root/tcz/onboot.lst --out ./tcz-cache/tce --tc 16 --arch x86_64
+    echo "[+] No hay .tcz offline en --tcz-dir. Descargando con fetch-tcz.sh..."
+    run_as_user "cd '$root' && '$fetch_script' --onboot '$PKG_LIST' --out ./tcz-cache/tce"
 
     shopt -s nullglob
     local downloaded=( "$cache_optional"/*.tcz )
     shopt -u nullglob
-    ((${#downloaded[@]} > 0)) || die "Vagrant terminó pero el cache sigue vacío: $cache_optional"
+    ((${#downloaded[@]} > 0)) || die "fetch-tcz.sh terminó pero el cache sigue vacío: $cache_optional"
 
     # IMPORTANTE: apuntamos TCZ_DIR al directorio que contiene .tcz DIRECTAMENTE
     TCZ_DIR="$cache_optional"
@@ -104,10 +119,14 @@ ensure_tcz_offline_with_vagrant_if_needed() {
 
 ISO=""
 DEV=""
-OVERLAY_DIR="./overlay"
-BOOTSTRAP_FILES_DIR="./bootstrap"
+IMAGE=""
+IMAGE_SIZE=""
+OVERLAY_DIR="$SCRIPT_ROOT/overlay"
+BOOTSTRAP_FILES_DIR="$SCRIPT_ROOT/bootstrap"
 TCZ_DIR=""
 PKG_LIST=""
+CONTROLLER_SRC="$(cd "$SCRIPT_ROOT/.." && pwd)/check-so/autoinstall-ubuntu.sh"
+BUNDLE_FALLBACK="1"
 LABEL_ESP="TINYBOOT"
 LABEL_PERSIST="TINYDATA"
 ESP_MIB="1024"
@@ -126,9 +145,13 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --iso) ISO="$2"; shift 2;;
     --dev) DEV="$2"; shift 2;;
+    --image) IMAGE="$2"; shift 2;;
+    --image-size) IMAGE_SIZE="$2"; shift 2;;
     --overlay) OVERLAY_DIR="$2"; shift 2;;
     --tcz-dir) TCZ_DIR="$2"; shift 2;;
     --pkg-list) PKG_LIST="$2"; shift 2;;
+    --controller-src) CONTROLLER_SRC="$2"; shift 2;;
+    --no-bundle-fallback) BUNDLE_FALLBACK="0"; shift 1;;
     --label-esp) LABEL_ESP="$2"; shift 2;;
     --label-persist) LABEL_PERSIST="$2"; shift 2;;
     --esp-mib) ESP_MIB="$2"; shift 2;;
@@ -158,9 +181,18 @@ have blkid || die "Missing blkid (util-linux)"
 
 if [[ "$VM_ONLY" != "1" ]]; then
   [[ -n "$ISO" && -f "$ISO" ]] || die "Missing/invalid --iso"
-  [[ -n "$DEV" && -b "$DEV" ]] || die "Missing/invalid --dev"
-  [[ ! "$DEV" =~ [0-9]$ ]] || die "--dev must be a disk like /dev/sdX"
+  [[ -n "$DEV" || -n "$IMAGE" ]] || die "One of --dev or --image is required"
+  [[ -z "$DEV" || -z "$IMAGE" ]] || die "--dev and --image are mutually exclusive"
+  if [[ -n "$DEV" ]]; then
+    require_whole_disk "$DEV"
+  fi
+  if [[ -n "$IMAGE" && ! -f "$IMAGE" ]]; then
+    [[ -n "$IMAGE_SIZE" ]] || die "--image-size is required to create a new image: $IMAGE"
+  fi
   [[ -d "$OVERLAY_DIR" ]] || die "Invalid --overlay dir: $OVERLAY_DIR"
+  if [[ "$BUNDLE_FALLBACK" == "1" ]]; then
+    [[ -f "$CONTROLLER_SRC" ]] || die "--controller-src not found: $CONTROLLER_SRC (or pass --no-bundle-fallback for a test-only build)"
+  fi
 fi
 if [[ -n "$TCZ_DIR" ]]; then [[ -d "$TCZ_DIR" ]] || die "Invalid --tcz-dir: $TCZ_DIR"; fi
 if [[ -n "$PKG_LIST" ]]; then [[ -f "$PKG_LIST" ]] || die "Invalid --pkg-list: $PKG_LIST"; fi
@@ -179,128 +211,53 @@ unmount_dev_tree() {
   done
 }
 
-# Detect TinyCore kernel/initrd inside ESP
-detect_tc_boot_files() {
-  local esp_root="$1"
-  local k=""
-  local i=""
-
-  # Common
-  [[ -f "$esp_root/boot/vmlinuz64" ]] && k="/boot/vmlinuz64"
-  [[ -z "$k" && -f "$esp_root/boot/vmlinuz" ]] && k="/boot/vmlinuz"
-
-  if [[ -z "$k" ]]; then
-    local found
-    found="$(find "$esp_root/boot" -maxdepth 1 -type f -name 'vmlinuz*' 2>/dev/null | head -n1 || true)"
-    [[ -n "$found" ]] && k="/boot/$(basename "$found")"
-  fi
-
-  for cand in corepure64.gz coreplus.gz core.gz tinycore.gz; do
-    if [[ -f "$esp_root/boot/$cand" ]]; then
-      i="/boot/$cand"
-      break
-    fi
-  done
-  if [[ -z "$i" ]]; then
-    local foundi
-    foundi="$(find "$esp_root/boot" -maxdepth 1 -type f -name '*.gz' 2>/dev/null | head -n1 || true)"
-    [[ -n "$foundi" ]] && i="/boot/$(basename "$foundi")"
-  fi
-
-  [[ -n "$k" && -n "$i" ]] || return 1
-  echo "$k|$i"
-}
-
-# Generate BOOTX64.EFI and grub.cfg. Uses ESP UUID for search.
-generate_grub_uefi_loader() {
-  local esp_root="$1"
-  local esp_uuid="$2"     # UUID of /dev/sdX1 (vfat)
-  local data_uuid="$3"     # UUID of /dev/sdX2 (PERSIST)
-
-  have grub-mkstandalone || die "grub-mkstandalone not found. Install: sudo apt install grub-efi-amd64-bin"
-
-  local bi
-  bi="$(detect_tc_boot_files "$esp_root" || true)"
-  [[ -n "$bi" ]] || die "Cannot detect TinyCore boot files under /boot (need vmlinuz* and *.gz)"
-  local KERNEL="${bi%%|*}"
-  local INITRD="${bi##*|}"
-
-  mkdir -p "$esp_root/EFI/BOOT"
-
-  # IMPORTANT: put search inside menuentry so root is correct when loading kernel/initrd
-  cat > "$esp_root/EFI/BOOT/grub.cfg" <<EOF
-set timeout=3
-set default=0
-
-menuentry "TinyCore (UEFI) + autoprov" {
-  insmod part_gpt
-  insmod fat
-  search --no-floppy --fs-uuid --set=root ${esp_uuid}
-  echo "Loading TinyCore..."
-  linux  ${KERNEL} quiet waitusb=20:UUID=$data_uuid tc-config tce=UUID=$data_uuid backup=UUID=$data_uuid loglevel=7
-  initrd ${INITRD}
-}
-EOF
-
-  echo "[+] Generating EFI/BOOT/BOOTX64.EFI with grub-mkstandalone..."
-  grub-mkstandalone \
-    -O x86_64-efi \
-    -o "$esp_root/EFI/BOOT/BOOTX64.EFI" \
-    "boot/grub/grub.cfg=$esp_root/EFI/BOOT/grub.cfg" >/dev/null
-
-  [[ -f "$esp_root/EFI/BOOT/BOOTX64.EFI" ]] || die "Failed to generate BOOTX64.EFI"
-}
-
 check_or_make_uefi() {
   local esp_root="$1"
   local esp_uuid="$2"
-  local data_uuid="$3"     # UUID of /dev/sdX2 (PERSIST)
+  local data_uuid="$3"     # UUID of PERSIST partition
 
-  if [[ -f "$esp_root/EFI/BOOT/BOOTX64.EFI" ]]; then
-    echo "[+] UEFI loader already present: EFI/BOOT/BOOTX64.EFI"
-    return 0
-  fi
-  echo "[!] No EFI loader in ISO copy. Will generate BOOTX64.EFI via GRUB..."
+  # A GRUB config is ALWAYS (re)generated: never trust an unmodified loader
+  # copied verbatim from the source ISO (agent-plan Phase 1).
   generate_grub_uefi_loader "$esp_root" "$esp_uuid" "$data_uuid"
 }
 
 check_uefi_on_block_device() {
   local dev="$1"
-  local p1="${dev}1"
+  local p1
+  p1="$(partition_path "$dev" 1)"
   [[ -b "$p1" ]] || die "UEFI check: missing ${p1}"
   local tmp
   tmp="$(mktemp -d)"
-  mount "$p1" "$tmp" || die "UEFI check: cannot mount ${p1}"
-  [[ -f "$tmp/EFI/BOOT/BOOTX64.EFI" ]] || { umount "$tmp" || true; rm -rf "$tmp"; die "UEFI check failed on ${p1}: missing EFI/BOOT/BOOTX64.EFI"; }
-  umount "$tmp" || true
-  rm -rf "$tmp"
+  register_cleanup_dir "$tmp"
+  mount -o ro "$p1" "$tmp" || die "UEFI check: cannot mount ${p1}"
+  register_cleanup_mount "$tmp"
+  [[ -f "$tmp/EFI/BOOT/BOOTX64.EFI" ]] || die "UEFI check failed on ${p1}: missing EFI/BOOT/BOOTX64.EFI"
+  umount "$tmp"
 }
 
 check_uefi_on_image_file() {
   local img="$1"
   have losetup || die "losetup required to validate UEFI on image"
   local loopdev
-  loopdev="$(losetup --find --show --partscan "$img")"
-  local p1="${loopdev}p1"
+  loopdev="$(losetup --find --show --read-only --partscan "$img")"
+  register_cleanup_loop "$loopdev"
+  local p1
+  p1="$(partition_path "$loopdev" 1)"
   local tmp
   tmp="$(mktemp -d)"
-  mount "$p1" "$tmp" || { losetup -d "$loopdev" || true; die "UEFI check: cannot mount ${p1}"; }
-  [[ -f "$tmp/EFI/BOOT/BOOTX64.EFI" ]] || { umount "$tmp" || true; losetup -d "$loopdev" || true; rm -rf "$tmp"; die "UEFI check failed on image: missing EFI/BOOT/BOOTX64.EFI"; }
-  umount "$tmp" || true
-  losetup -d "$loopdev" || true
-  rm -rf "$tmp"
+  register_cleanup_dir "$tmp"
+  mount -o ro "$p1" "$tmp" || die "UEFI check: cannot mount ${p1}"
+  register_cleanup_mount "$tmp"
+  [[ -f "$tmp/EFI/BOOT/BOOTX64.EFI" ]] || die "UEFI check failed on image: missing EFI/BOOT/BOOTX64.EFI"
+  umount "$tmp"
 }
 
 build_usb() {
   local iso="$1"
-  local dev="$2"
+  local dev="$2"          # real whole-disk device to partition/format
+  local erase_token="$3"  # serial (real disk) or image path (image build)
 
-  echo "[!] ABOUT TO ERASE: $dev"
-  lsblk -o NAME,SIZE,MODEL,TRAN "$dev" || true
-  if [[ "$ASSUME_YES" != "1" ]]; then
-    read -r -p "Type YES to continue: " ans
-    [[ "$ans" == "YES" ]] || die "Aborted."
-  fi
+  confirm_erase_token "$dev" "$erase_token" "$ASSUME_YES"
 
   unmount_dev_tree "$dev"
   wipefs -a "$dev"
@@ -313,8 +270,9 @@ build_usb() {
   partprobe "$dev" || true
   sleep 1
 
-  local esp="${dev}1"
-  local persist="${dev}2"
+  local esp persist
+  esp="$(partition_path "$dev" 1)"
+  persist="$(partition_path "$dev" 2)"
   [[ -b "$esp" ]] || die "ESP not found: $esp"
   [[ -b "$persist" ]] || die "Persist not found: $persist"
 
@@ -327,30 +285,39 @@ build_usb() {
   [[ -n "$esp_uuid" ]] || die "Cannot read UUID from ESP ($esp)"
   local data_uuid
   data_uuid="$(blkid -s UUID -o value "$persist")"
-  [[ -n "$esp_uuid" ]] || die "Cannot read UUID from ESP ($esp)"
+  [[ -n "$data_uuid" ]] || die "Cannot read UUID from PERSIST ($persist)"
 
   local work
   work="$(mktemp -d)"
+  register_cleanup_dir "$work"
   local iso_mnt="$work/iso"
   local esp_mnt="$work/esp"
   local per_mnt="$work/persist"
   mkdir -p "$iso_mnt" "$esp_mnt" "$per_mnt"
-  trap 'set +e; umount "$iso_mnt" >/dev/null 2>&1 || true; umount "$esp_mnt" >/dev/null 2>&1 || true; umount "$per_mnt" >/dev/null 2>&1 || true; rm -rf "$work"' RETURN
 
   mount -o loop,ro "$iso" "$iso_mnt"
+  register_cleanup_mount "$iso_mnt"
   mount "$esp" "$esp_mnt"
+  register_cleanup_mount "$esp_mnt"
   mount "$persist" "$per_mnt"
+  register_cleanup_mount "$per_mnt"
 
   # Copy ISO to ESP
   if have rsync; then
     rsync -aHAX --delete "$iso_mnt"/ "$esp_mnt"/
   else
-    rm -rf "$esp_mnt"/*
+    rm -rf "${esp_mnt:?}"/*
     cp -a "$iso_mnt"/. "$esp_mnt"/
   fi
 
-  # Ensure UEFI loader exists (either from ISO or generated). Uses detected ESP UUID.
+  # Ensure UEFI loader exists (project-owned, always regenerated).
   check_or_make_uefi "$esp_mnt" "$esp_uuid" "$data_uuid"
+
+  # Legacy BIOS/syslinux: idempotent append-line patching (no-op if the ISO
+  # ships no legacy loader).
+  if [[ "$PATCH_BOOTCODES" == "1" ]]; then
+    patch_syslinux_configs "$esp_mnt" "$data_uuid"
+  fi
 
   # Prepare persistent /tce
   mkdir -p "$per_mnt/tce/optional" "$per_mnt/tce/logs" "$per_mnt/tce/autoprov"
@@ -358,20 +325,37 @@ build_usb() {
 TinyCore persistent storage:
 - Extensions:  /tce/optional
 - Onboot:      /tce/onboot.lst
-- Backup:      /tce/mydata.tgz (restores overlay at boot)
+- Backup:      /tce/mydata.tgz (restores overlay at boot, including
+               /opt/autorun/bootstrap.fallback.sh, the bundled offline
+               controller used only after remote download retries are
+               exhausted)
 - Logs:        /tce/logs
+- Package manifest: /tce/manifest.json (sha256 of every cached .tcz, when
+               --tcz-dir was used to build this USB)
 EOF
 
-  # Copy tcz offline
+  # Copy tcz offline (verified against tcz/pinned-version.json + fetch-tcz.sh
+  # manifest.json before copying; agent-plan Phase 1 "TCZ caching pipeline").
   if [[ -n "$TCZ_DIR" ]]; then
+    verify_tcz_dir_against_manifest "$TCZ_DIR"
     shopt -s nullglob
     cp -a "$TCZ_DIR"/*.tcz "$per_mnt/tce/optional/" 2>/dev/null || true
     cp -a "$TCZ_DIR"/*.tcz.dep "$per_mnt/tce/optional/" 2>/dev/null || true
     cp -a "$TCZ_DIR"/*.tcz.md5.txt "$per_mnt/tce/optional/" 2>/dev/null || true
     shopt -u nullglob
+    # Also carry the manifest itself onto the USB (top-level tce/manifest.json,
+    # never inside optional/ so it is never mistaken for a package) so
+    # validate-build.sh can re-verify cached packages by mounting the image
+    # alone, without access to the original --tcz-dir (agent-plan Phase 1
+    # post-build validator: "Verify ... cached packages").
+    if [[ -f "$TCZ_DIR/manifest.json" ]]; then
+      cp -a "$TCZ_DIR/manifest.json" "$per_mnt/tce/manifest.json"
+    elif [[ -f "$(dirname "$TCZ_DIR")/manifest.json" ]]; then
+      cp -a "$(dirname "$TCZ_DIR")/manifest.json" "$per_mnt/tce/manifest.json"
+    fi
   fi
 
-  # Install onboot.lst
+  # Install onboot.lst (tcz/onboot.lst is the single canonical package list)
   if [[ -n "$PKG_LIST" ]]; then
     awk '{
       gsub(/\r/,"");
@@ -381,30 +365,50 @@ EOF
     }' "$PKG_LIST" > "$per_mnt/tce/onboot.lst"
   fi
 
-  # Pack overlay -> mydata.tgz (restored on boot)
-  tar -C "$OVERLAY_DIR" -czf "$per_mnt/tce/mydata.tgz" --numeric-owner .
+  # Stage the overlay into a scratch copy so the fallback controller can be
+  # injected at opt/autorun/bootstrap.fallback.sh before packing -- the
+  # git-tracked overlay/ source tree itself is never written to (agent-plan
+  # Phase 1: "Add /opt/autorun/bootstrap.fallback.sh to the overlay").
+  local overlay_stage
+  overlay_stage="$(mktemp -d)"
+  register_cleanup_dir "$overlay_stage"
+  if have rsync; then
+    rsync -aHAX "$OVERLAY_DIR"/ "$overlay_stage"/
+  else
+    cp -a "$OVERLAY_DIR"/. "$overlay_stage"/
+  fi
 
-  # For legacy/syslinux paths (optional)
-#   if [[ "$PATCH_BOOTCODES" == "1" ]]; then
-#     patch_bootconfigs_add_karg "$esp_mnt" "tce=LABEL=${LABEL_PERSIST}"
-#     patch_bootconfigs_add_karg "$esp_mnt" "backup=LABEL=${LABEL_PERSIST}"
-#   fi
+  if [[ "$BUNDLE_FALLBACK" == "1" ]]; then
+    mkdir -p "$overlay_stage/opt/autorun"
+    cp -a "$CONTROLLER_SRC" "$overlay_stage/opt/autorun/bootstrap.fallback.sh"
+    chmod +x "$overlay_stage/opt/autorun/bootstrap.fallback.sh"
+    echo "[+] Bundled fallback controller: $CONTROLLER_SRC -> opt/autorun/bootstrap.fallback.sh"
+    echo "    sha256: $(sha256_file "$overlay_stage/opt/autorun/bootstrap.fallback.sh")"
+  else
+    echo "[!] --no-bundle-fallback: no offline fallback controller bundled."
+  fi
 
-  # copy autorun env file
+  # Pack the staged overlay -> mydata.tgz (restored on boot); bootlocal.sh is
+  # the single authoritative entrypoint (agent-plan Phase 1).
+  tar -C "$overlay_stage" -czf "$per_mnt/tce/mydata.tgz" --numeric-owner .
+
+  # A second, directly-editable copy of autoprov.env lives on the tce
+  # partition itself (ENV_TCE in autoprov-run.sh): it overrides the
+  # overlay-shipped defaults without requiring a full USB rebuild.
   cp -a "$OVERLAY_DIR/opt/autorun/autoprov.env" "$per_mnt/tce" 2>/dev/null || true
   # copy files needed by bootstrap scripts
   cp -a "$BOOTSTRAP_FILES_DIR/." "$per_mnt/tce" 2>/dev/null || true
 
   sync
-  umount "$per_mnt" || true
-  umount "$esp_mnt" || true
-  umount "$iso_mnt" || true
-  trap - RETURN
+  umount "$per_mnt"
+  umount "$esp_mnt"
+  umount "$iso_mnt"
   rm -rf "$work"
 
   echo "[+] Done. UEFI loader present and persistence ready."
-  echo "    ESP UUID:  $esp_uuid (used in grub search)"
-  echo "    Logs in:   LABEL=$LABEL_PERSIST -> tce/logs/"
+  echo "    ESP UUID:     $esp_uuid (used in grub search)"
+  echo "    PERSIST UUID: $data_uuid (used in tce=/backup=/waitusb= kargs)"
+  echo "    Logs in:      LABEL=$LABEL_PERSIST -> tce/logs/"
 }
 
 vm_test() {
@@ -465,11 +469,40 @@ vm_test() {
   echo "    sudo rm -f '$disk_path'   # cleanup qcow2 when done"
 }
 
+build_from_image() {
+  local iso="$1" image="$2"
+
+  if [[ ! -f "$image" ]]; then
+    have qemu-img || die "qemu-img is required to create --image $image"
+    echo "[+] Creating sparse image: $image (${IMAGE_SIZE})"
+    qemu-img create -f raw "$image" "$IMAGE_SIZE" >/dev/null
+  fi
+
+  have losetup || die "losetup is required for --image builds"
+  local loopdev
+  loopdev="$(losetup --find --show --partscan "$image")"
+  register_cleanup_loop "$loopdev"
+
+  build_usb "$iso" "$loopdev" "$(cd "$(dirname "$image")" && pwd)/$(basename "$image")"
+
+  losetup -d "$loopdev"
+  # Unregister: already detached above, avoid a harmless double-detach warning.
+  local i kept=()
+  for i in "${CLEANUP_LOOPS[@]}"; do
+    [[ "$i" == "$loopdev" ]] || kept+=("$i")
+  done
+  CLEANUP_LOOPS=("${kept[@]}")
+}
 
 if [[ "$VM_ONLY" != "1" ]]; then
-  build_usb "$ISO" "$DEV"
+  if [[ -n "$IMAGE" ]]; then
+    build_from_image "$ISO" "$IMAGE"
+  else
+    build_usb "$ISO" "$DEV" "$(disk_serial "$DEV")"
+  fi
 fi
 
 if [[ "$VM_TEST" == "1" || "$VM_ONLY" == "1" ]]; then
   vm_test "$VM_SRC"
 fi
+

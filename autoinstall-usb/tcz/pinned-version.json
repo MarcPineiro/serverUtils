@@ -1,0 +1,6 @@
+{
+  "tc_major": "16",
+  "arch": "x86_64",
+  "mirror": "http://tinycorelinux.net",
+  "note": "Pinned Tiny Core release used to build autoinstall-usb. Bump deliberately and re-run tcz/fetch-tcz.sh to refresh tcz-cache/tce/manifest.json with new checksums before rebuilding any USB."
+}

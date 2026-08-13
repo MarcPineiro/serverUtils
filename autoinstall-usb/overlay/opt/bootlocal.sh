@@ -1,4 +1,13 @@
 #!/bin/sh
+# /opt/bootlocal.sh
+#
+# The single authoritative Tiny Core boot entrypoint (agent-plan Phase 1:
+# "Replace the two potential launch paths with one authoritative path").
+# Tiny Core's base system runs this script automatically at the end of boot;
+# no /etc/rc.d or /etc/init.d hook is needed or shipped by this overlay --
+# a prior duplicate (S99autoprov / etc/init.d/autoprov) has been removed.
+# The actual run-once/lock/retry logic lives in autoprov-run.sh itself, so
+# it stays safe even if something else invokes it a second time.
 TCE_DIR="/etc/sysconfig/tcedir"
 LOG_DIR="$TCE_DIR/logs"
 STATE_DIR="$TCE_DIR/state"
@@ -34,12 +43,13 @@ if [ -f "$TCE_DIR/onboot.lst" ]; then
   done < "$TCE_DIR/onboot.lst"
 fi
 
-# Lanzar autorun con marca persistente
+# Provisioning: autoprov-run.sh owns its own started/running/downloaded/
+# succeeded/failed state files and its own boot lock; bootlocal.sh only
+# needs to know its overall exit code for bootlocal.log.
 if [ -x /opt/autorun/autoprov-run.sh ]; then
-  echo "$(date -Iseconds) autorun START" > "$STATE_DIR/autorun.started"
-  /opt/autorun/autoprov-run.sh >>"$LOG_DIR/autoprov.log" 2>&1
+  /opt/autorun/autoprov-run.sh
   rc=$?
-  echo "$(date -Iseconds) autorun END rc=$rc" > "$STATE_DIR/autorun.finished"
+  echo "$(date -Iseconds) autoprov-run.sh rc=$rc"
 fi
 
 echo "$(date -Iseconds) bootlocal END" > "$STATE_DIR/bootlocal.finished"

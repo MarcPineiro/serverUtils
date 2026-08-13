@@ -359,61 +359,61 @@ fallback.
 
 ### Code tasks
 
-- [ ] Refactor `autoinstall-usb/build-tinycore-usb.sh` into small functions.
-  - [ ] Add `partition_path(disk, number)` supporting `/dev/sdX`, `/dev/vdX`,
+- [x] Refactor `autoinstall-usb/build-tinycore-usb.sh` into small functions.
+  - [x] Add `partition_path(disk, number)` supporting `/dev/sdX`, `/dev/vdX`,
     `/dev/mmcblkN`, `/dev/nvmeNnN`, and loop devices.
-  - [ ] Verify `--dev` is a whole disk using `lsblk TYPE=disk`.
-  - [ ] Print model, serial, size, transport, and current mounts before erasure.
-  - [ ] Require the exact target serial as the confirmation token.
-  - [ ] Add `--image PATH --image-size SIZE` for safe raw-image builds.
-  - [ ] Add an EXIT cleanup trap for mounts and loop devices.
-- [ ] Always generate a project-owned GRUB UEFI configuration rather than
+  - [x] Verify `--dev` is a whole disk using `lsblk TYPE=disk`.
+  - [x] Print model, serial, size, transport, and current mounts before erasure.
+  - [x] Require the exact target serial as the confirmation token.
+  - [x] Add `--image PATH --image-size SIZE` for safe raw-image builds.
+  - [x] Add an EXIT cleanup trap for mounts and loop devices.
+- [x] Always generate a project-owned GRUB UEFI configuration rather than
   trusting an unmodified loader from the source ISO.
-  - [ ] Add the Tiny Core kernel arguments for `tce`, `backup`, and `waitusb`.
-  - [ ] Add a normal Tiny Core entry.
-  - [ ] Add a diagnostic Tiny Core entry with verbose logging.
-  - [ ] Reserve an Ubuntu autoinstall entry for Phase 3.
-- [ ] Implement legacy BIOS/syslinux configuration patching.
-  - [ ] Patch every relevant `append` line idempotently.
-  - [ ] Verify the persistence UUID occurs exactly once per entry.
-- [ ] Add a post-build validator.
-  - [ ] Mount both partitions read-only.
-  - [ ] Verify UEFI loader, BIOS loader, kernel, initrd, `mydata.tgz`, package
+  - [x] Add the Tiny Core kernel arguments for `tce`, `backup`, and `waitusb`.
+  - [x] Add a normal Tiny Core entry.
+  - [x] Add a diagnostic Tiny Core entry with verbose logging.
+  - [x] Reserve an Ubuntu autoinstall entry for Phase 3.
+- [x] Implement legacy BIOS/syslinux configuration patching.
+  - [x] Patch every relevant `append` line idempotently.
+  - [x] Verify the persistence UUID occurs exactly once per entry.
+- [x] Add a post-build validator.
+  - [x] Mount both partitions read-only.
+  - [x] Verify UEFI loader, BIOS loader, kernel, initrd, `mydata.tgz`, package
     list, cached packages, environment file, and bootstrap fallback.
-  - [ ] Verify referenced UUIDs match the actual filesystems.
-  - [ ] Emit `build-manifest.json` with hashes.
-- [ ] Replace the two potential launch paths with one authoritative path.
-  - [ ] Keep `/opt/bootlocal.sh` as the entrypoint.
-  - [ ] Remove `S99autoprov`, or make it call a lock-protected no-op wrapper.
-  - [ ] Add a `mkdir`-based boot lock that works on BusyBox.
-- [ ] Repair `autoprov-run.sh`.
-  - [ ] Re-enable `RUN_ONCE` handling.
-  - [ ] Distinguish `started`, `downloaded`, `running`, `succeeded`, and
+  - [x] Verify referenced UUIDs match the actual filesystems.
+  - [x] Emit `build-manifest.json` with hashes.
+- [x] Replace the two potential launch paths with one authoritative path.
+  - [x] Keep `/opt/bootlocal.sh` as the entrypoint.
+  - [x] Remove `S99autoprov`, or make it call a lock-protected no-op wrapper.
+  - [x] Add a `mkdir`-based boot lock that works on BusyBox.
+- [x] Repair `autoprov-run.sh`.
+  - [x] Re-enable `RUN_ONCE` handling.
+  - [x] Distinguish `started`, `downloaded`, `running`, `succeeded`, and
     `failed` state files.
-  - [ ] Write the success flag only after the downloaded controller succeeds.
-  - [ ] Add bounded network retries with clear errors.
-  - [ ] Validate downloaded content is nonempty, begins with a shell shebang,
+  - [x] Write the success flag only after the downloaded controller succeeds.
+  - [x] Add bounded network retries with clear errors.
+  - [x] Validate downloaded content is nonempty, begins with a shell shebang,
     and matches an optional SHA-256 from `installer.env`.
-  - [ ] Use an atomic temporary file and rename.
-  - [ ] Preserve the failed download and controller log for diagnosis.
-- [ ] Add `/opt/autorun/bootstrap.fallback.sh` to the overlay.
-  - [ ] Bundle the latest accepted controller during USB build.
-  - [ ] Record its checksum in the build manifest.
-  - [ ] Run it only after remote retries are exhausted.
-- [ ] Correct `mount-tinydata.sh` so it lists logs from the mountpoint it
+  - [x] Use an atomic temporary file and rename.
+  - [x] Preserve the failed download and controller log for diagnosis.
+- [x] Add `/opt/autorun/bootstrap.fallback.sh` to the overlay.
+  - [x] Bundle the latest accepted controller during USB build.
+  - [x] Record its checksum in the build manifest.
+  - [x] Run it only after remote retries are exhausted.
+- [x] Correct `mount-tinydata.sh` so it lists logs from the mountpoint it
   actually mounted.
-- [ ] Remove duplicate cached `bootlocal.sh` source or generate it from the
+- [x] Remove duplicate cached `bootlocal.sh` source or generate it from the
   overlay source during build.
-- [ ] Pin Tiny Core version and extension checksums in a manifest.
-- [ ] Document and enforce the TCZ caching pipeline.
-  - [ ] Declare `autoinstall-usb/tcz/onboot.lst` as the single canonical package
+- [x] Pin Tiny Core version and extension checksums in a manifest.
+- [x] Document and enforce the TCZ caching pipeline.
+  - [x] Declare `autoinstall-usb/tcz/onboot.lst` as the single canonical package
     list; remove or generate `tcz-cache/tce/onboot.lst` during build.
-  - [ ] Document the flow: `tcz/fetch-tcz.sh` downloads to `tcz-cache/` →
+  - [x] Document the flow: `tcz/fetch-tcz.sh` downloads to `tcz-cache/` →
     builder copies verified packages from cache to USB `TINYDATA`.
-  - [ ] Verify all cached packages match the manifest checksums before copying.
-- [ ] Use `autoinstall-usb/isos/` as the local storage directory for offline
+  - [x] Verify all cached packages match the manifest checksums before copying.
+- [x] Use `autoinstall-usb/isos/` as the local storage directory for offline
   Ubuntu ISO builds (referenced by Phase 3 `--offline-installer`).
-- [ ] Add tests for malformed environment files and missing network tools.
+- [x] Add tests for malformed environment files and missing network tools.
 
 ### Local test
 
